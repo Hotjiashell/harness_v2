@@ -1,0 +1,134 @@
+# 层级化知识树构建与优化框架
+
+基于案例库构建层级化知识树，再基于对话数据优化节点内容。实现自 `build/requirements.md`。
+
+## 目录结构
+
+```
+build/
+├── config.py            # 全局配置（所有可调参数）
+├── run.py               # 命令行入口（build / optimize / all）
+├── README.md
+├── khtree/              # 框架包
+│   ├── config_types.py  # 配置数据类定义
+│   ├── models.py        # Node / Tree / Case / Dialog / Operation 等数据结构
+│   ├── utils.py         # 日志、IO、错误记录、并发、JSON 解析
+│   ├── llm.py           # 异步 LLM 客户端（openai / mock 两种 provider）
+│   ├── prompts.py       # 提示词模板
+│   ├── clustering.py    # 聚类适配器（调用根 cluster.py，带离线回退）
+│   ├── retrieval.py     # 检索适配器（调用根 retrieve.py，带离线回退）
+│   ├── build_tree.py    # 阶段一：基于案例库构建知识树
+│   └── optimize.py      # 阶段二：基于对话数据优化节点内容
+└── output/              # 所有产物（运行后生成）
+    ├── knowledge_tree_case.json        # 阶段一产物（最终用户字段）
+    ├── knowledge_tree_case_debug.json  # 阶段一产物（含 case_ids）
+    ├── knowledge_tree.json             # 阶段二最终产物
+    ├── knowledge_tree_debug.json       # 含 case_ids 的最终产物
+    ├── run_config.json                 # 本次运行配置快照
+    ├── errors.log                      # 错误记录
+    └── intermediate/                   # 每个阶段的中间结果（便于调试）
+```
+
+## 安装依赖
+
+```bash
+pip3 install openai tqdm httpx
+```
+
+（`mock` provider 仅 `tqdm` 为可选项；`openai` provider 需要 `openai` 包。）
+
+## 运行
+
+```bash
+# 阶段一：基于案例库构建知识树
+python3 build/run.py build
+
+# 阶段二：基于对话数据优化节点内容（默认读取阶段一产物）
+python3 build/run.py optimize
+
+# 一键全流程
+python3 build/run.py all
+
+# 打印知识树（含案例数）
+python3 print_tree.py build/output/knowledge_tree.json
+```
+
+### 续跑
+
+```bash
+# 从某层中间树文件继续往后构建
+python3 build/run.py build \
+    --resume build/output/intermediate/006_L1_tree_after.json \
+    --from-level 2
+
+# 知识树构建完成后，单独跑对话优化（指定输入树）
+python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
+```
+
+## 两个阶段
+
+### 阶段一：基于案例库构建（`build_tree.py`）
+
+逐层构建，每一层执行：
+
+```
+指定/聚类初始类别
+  → 案例分类 (Classification, 并行)
+  → Batch Reflection (并行) → Proposals
+  → Proposal Aggregation → Update Plan
+  → Complexity Check（新增后节点数 > MaxNodeCount 则反馈重生成）
+  → Coverage Validation（试执行 + 重分类 Unknown，全覆盖才接受，否则反馈重试）
+  → Accept / Feedback
+```
+
+- **L1** 初始类别人工定义（`output/seed_L1.json`）。
+- **L2 及以后** 初始类别由聚类生成：对每个案例总结 → embedding 聚类 → 每簇总结 1-3 个候选子类别 → 综观全部候选合成最终初始类别。聚类调用根目录 `cluster.py`（默认 K-Means，兼容 HDBSCAN）。
+- 逐层递归直到 `max_depth`；类别下案例数小于 `min_cases_to_split` 不再分裂。
+
+### 阶段二：基于对话优化节点内容（`optimize.py`）
+
+不新增/删除节点，只优化已有节点的 `dialog_trigger` 或 `background`：
+
+```
+对话导航(只看对话) → 收集背景 → 生成 query → 调用 retrieve 检索 (并行)
+  → 失败则错误归因（哪个节点的 trigger / background 出问题）
+  → 按节点聚合错误样本成 Batch
+  → 对每个 Batch 反思 → 修改 dialog_trigger / background
+  → 用训练/验证对话验证召回率是否提高 → 接受 / 反馈重试
+```
+
+检索调用根目录 `retrieve.py::retrive`（当前为未实现的桩，框架已预留调用方式）。
+
+## 配置说明（`config.py`）
+
+所有需求中要求“可配置”的项都在 `config.py`：
+
+| 配置 | 字段 | 说明 |
+|------|------|------|
+| 案例库路径 | `PATHS.case_path` | |
+| 对话训练/验证集路径 | `PATHS.dialog_train_path` / `dialog_val_path` | |
+| L1 种子类别路径 | `PATHS.seed_l1_path` | |
+| LLM provider | `LLM.provider` | `mock`（离线启发式）/ `openai` |
+| LLM 接口 | `LLM.base_url` / `api_key` / `model` | |
+| 并发数 | `LLM.concurrency` | 分类、反思、导航等并行度 |
+| 最大树深 | `BUILD.max_depth` | |
+| Batch 大小 | `BUILD.batch_size` | |
+| 每 Batch 无法归类案例数 | `BUILD.unknown_per_batch` | |
+| MaxNodeCount | `BUILD.max_node_count` | Complexity Check 上限 |
+| 覆盖率验证重试次数 | `BUILD.max_plan_retries` | |
+| 复杂度检查重试次数 | `BUILD.max_complexity_retries` | |
+| 聚类方法/参数 | `CLUSTER.*` | 默认 `kmeans`，兼容 `hdbscan` |
+| 优化反思重试次数 | `OPTIMIZE.max_reflection_retries` | |
+
+## 关于 provider
+
+- `mock`（默认）：不联网，用内置领域关键词启发式模拟所有 LLM 决策，可在无模型环境下完整跑通两个阶段并产出全部中间结果，便于调试与回归。
+- `openai`：把 `config.py` 的 `LLM.provider` 改为 `"openai"`，并填好 `base_url` / `api_key` / `model` 即可切换到真实大模型；提示词见 `khtree/prompts.py`。
+
+## 健壮性
+
+- **错误隔离**：单条案例/对话处理出错不会中断整体流程，失败项被跳过并记录到 `output/errors.log`。
+- **中间产物**：每个阶段都按序号写出 JSON 到 `output/intermediate/`，便于排查“跑到哪一步、结果是什么”。
+- **进度可视**：命令行用 `tqdm` 进度条 + 带时间戳的阶段日志输出。
+- **续跑**：阶段一可从任意层中间树继续；阶段二可独立基于已构建的树运行。
+```
