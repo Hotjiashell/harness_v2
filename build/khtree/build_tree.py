@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -216,21 +217,22 @@ class CaseTreeBuilder:
              for r in classifications],
         )
 
-        # ---- 2~6. 反思 + 聚合 + 复杂度 + 覆盖率（带重试） ----
+        # ---- 2. Batch Reflection：只跑一次，基于案例原文产出 proposals（粗料）----
+        proposals = await self._batch_reflection(
+            parent, cases, classifications, scope
+        )
+        self._dump(f"{_safe(scope)}_proposals", proposals)
+
+        # ---- 3~6. 聚合 + 复杂度 + 覆盖率（带重试，覆盖反馈只回聚合）----
         plan_feedback = ""
         accepted_plan: Optional[List[Operation]] = None
         for plan_attempt in range(self.config.build.max_plan_retries + 1):
             log(f"{scope} 生成 Update Plan（第 {plan_attempt+1} 次尝试）", stage="BUILD")
 
-            # Batch Reflection -> Proposals
-            proposals = await self._batch_reflection(
-                parent, cases, classifications, scope, plan_feedback
-            )
-            self._dump(f"{_safe(scope)}_proposals_try{plan_attempt+1}", proposals)
-
-            # Aggregation -> Update Plan，含 Complexity Check
+            # Aggregation -> Update Plan，含 Complexity Check。
+            # 聚合吃覆盖反馈，可去重合并，也可主动扩充 add 以覆盖更多案例。
             plan = await self._aggregate_with_complexity_check(
-                parent, proposals, scope, plan_attempt
+                parent, proposals, scope, plan_attempt, plan_feedback
             )
             self._dump(
                 f"{_safe(scope)}_update_plan_try{plan_attempt+1}",
@@ -248,7 +250,7 @@ class CaseTreeBuilder:
                 break
             else:
                 plan_feedback = feedback
-                log(f"{scope} 覆盖率验证未通过，反馈后重试。", stage="BUILD")
+                log(f"{scope} 覆盖率验证未通过，反馈回聚合后重试。", stage="BUILD")
 
         if accepted_plan is None:
             log(f"{scope} 达到最大重试次数仍未通过，使用最后一版 plan 强制执行并兜底。",
@@ -331,7 +333,7 @@ class CaseTreeBuilder:
     # -- Batch Reflection ----------------------------------------------------
     async def _batch_reflection(
         self, parent: Node, cases: List[Case],
-        classifications: List[ClassificationResult], scope: str, feedback: str,
+        classifications: List[ClassificationResult], scope: str,
     ) -> List[Dict]:
         case_by_id = {c.case_id: c for c in cases}
         unknown_ids = [r.case_id for r in classifications if r.is_unknown()]
@@ -352,7 +354,7 @@ class CaseTreeBuilder:
             b_unknown, b_known = batch
             batch_cases = [case_by_id[c] for c in (b_unknown + b_known) if c in case_by_id]
             return await self.llm.reflect_batch(
-                batch_cases, parent.children, b_unknown, feedback
+                batch_cases, parent.children, b_unknown
             )
 
         results = await gather_limited(
@@ -392,14 +394,20 @@ class CaseTreeBuilder:
 
     # -- Aggregation + Complexity Check -------------------------------------
     async def _aggregate_with_complexity_check(
-        self, parent: Node, proposals: List[Dict], scope: str, plan_attempt: int
+        self, parent: Node, proposals: List[Dict], scope: str,
+        plan_attempt: int, coverage_feedback: str = "",
     ) -> List[Operation]:
         if not proposals:
             return []
 
-        feedback = ""
+        # coverage_feedback 来自上一轮覆盖率验证（上版 plan + 未覆盖案例 + 无用 add），
+        # 作为聚合的基础反馈；complexity_feedback 是本函数内层因超限产生的反馈。
+        # max_add：本层还能新增的类别数（写进 prompt，主动约束模型）。
+        max_add = max(0, self.config.build.max_node_count - len(parent.children))
+        complexity_feedback = ""
         for c_try in range(self.config.build.max_complexity_retries + 1):
-            agg = await self.llm.aggregate(proposals, parent.children, feedback)
+            feedback = "\n\n".join(f for f in (coverage_feedback, complexity_feedback) if f)
+            agg = await self.llm.aggregate(proposals, parent.children, feedback, max_add)
             plan = [Operation.from_dict(op) for op in agg if isinstance(op, dict)]
             plan = [op for op in plan if op.op_type in (ADD, MODIFY)]
 
@@ -412,7 +420,7 @@ class CaseTreeBuilder:
             if new_count <= self.config.build.max_node_count:
                 return plan
 
-            feedback = (
+            complexity_feedback = (
                 "当前修改方案新增类别过多。\n\n"
                 "请重新审视新增类别，\n"
                 "总结能够覆盖多个Add的更高级别抽象的Add，\n"
@@ -466,12 +474,40 @@ class CaseTreeBuilder:
                     for c in cases]
             return True, "", full
 
-        names = [self.cases[c].case_name for c in still_unknown if c in self.cases]
+        # 反馈里带上三部分，让模型在上一版方案基础上修正，而不是从头重猜：
+        #   1) 上一版 Update Plan
+        #   2) 仍无法分类的案例（含归不进的原因）
+        #   3) 新增却一个 unknown 都没接住的 add 节点（建议删除）
+        recls_by_id = {r.case_id: r for r in recls}
+        plan_block = json.dumps([op.to_dict() for op in plan], ensure_ascii=False, indent=2)
+        still_lines = []
+        for cid in still_unknown[:10]:
+            case = self.cases.get(cid)
+            if not case:
+                continue
+            reason = recls_by_id.get(cid).reason if recls_by_id.get(cid) else ""
+            line = f"- {case.case_name}"
+            if reason:
+                line += f"（仍无法归类的原因：{reason}）"
+            still_lines.append(line)
+
+        # 统计每个 add 出来的新类别接住了多少 unknown
+        assigned = {r.category for r in recls if not r.is_unknown()}
+        useless_adds = [op.name for op in plan if op.op_type == ADD and op.name not in assigned]
+
         feedback = (
+            "上一版 Update Plan 如下：\n"
+            f"{plan_block}\n\n"
             f"执行该 Update Plan 后，仍有 {len(still_unknown)} 个案例无法分类：\n"
-            + "\n".join(f"- {n}" for n in names[:10])
-            + "\n请调整 Update Plan（新增或修改类别），使这些案例也能被覆盖。"
+            + "\n".join(still_lines)
+            + "\n\n请在上一版 Update Plan 的基础上调整（新增或修改类别），"
+            "重点覆盖上述仍无法分类的案例；不要重复产出无法覆盖它们的方案。"
         )
+        if useless_adds:
+            feedback += (
+                "\n\n另外，以下新增类别实际未接住任何案例，属于无用 add，请删除：\n"
+                + "\n".join(f"- {n}" for n in useless_adds)
+            )
         return False, feedback, classifications
 
     # -- 应用 plan -----------------------------------------------------------

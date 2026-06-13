@@ -126,11 +126,11 @@ class LLMClient:
 
     async def reflect_batch(
         self, batch_cases: List[Case], categories: List[Node],
-        unknown_ids: List[str], feedback: str = "",
+        unknown_ids: List[str],
     ) -> List[Dict]:
         if self.provider == "mock":
             return self._mock_reflect_batch(batch_cases, categories, unknown_ids)
-        msgs = prompts.reflect_batch_messages(batch_cases, categories, unknown_ids, feedback)
+        msgs = prompts.reflect_batch_messages(batch_cases, categories, unknown_ids)
         data = extract_json(await self._chat(msgs))
         return data if isinstance(data, list) else []
 
@@ -160,11 +160,12 @@ class LLMClient:
         return proposals
 
     async def aggregate(
-        self, proposals: List[Dict], categories: List[Node], feedback: str = ""
+        self, proposals: List[Dict], categories: List[Node],
+        feedback: str = "", max_add: int = 0,
     ) -> List[Dict]:
         if self.provider == "mock":
             return self._mock_aggregate(proposals, feedback)
-        msgs = prompts.aggregate_messages(proposals, categories, feedback)
+        msgs = prompts.aggregate_messages(proposals, categories, feedback, max_add)
         data = extract_json(await self._chat(msgs))
         return data if isinstance(data, list) else []
 

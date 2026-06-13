@@ -82,17 +82,27 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 
 ### 阶段一：基于案例库构建（`build_tree.py`）
 
-逐层构建，每一层执行：
+逐层构建，每一层先做一次分类，再进入「聚合 → 复杂度 → 覆盖率」重试循环：
 
 ```
 指定/归纳初始类别
-  → 案例分类 (Classification, 并行)
-  → Batch Reflection (并行) → Proposals
-  → Proposal Aggregation → Update Plan
-  → Complexity Check（新增后节点数 > MaxNodeCount 则反馈重生成）
-  → Coverage Validation（试执行 + 重分类 Unknown，全覆盖才接受，否则反馈重试）
-  → Accept / Feedback
+  → 案例分类 (Classification, 并行)            ← known 案例只分这一次
+  → Batch Reflection (并行) → Proposals        ← 只跑一次，基于案例原文产出"粗料"
+  → 重试循环（最多 max_plan_retries+1 次）：
+      Aggregation → Update Plan                ← 吃覆盖反馈；可去重合并，也可主动扩充 add
+        └ Complexity Check（内层）：新增后节点数 > MaxNodeCount 则反馈重生成 / 兜底截断
+      Coverage Validation（试执行 plan + 只重分类 Unknown）
+        ├ 全覆盖 → 接受，break
+        └ 有遗漏 → 生成覆盖反馈，回到 Aggregation 重试
+  → 应用 plan → 改名重映射 → 只对仍 Unknown 的案例重分类 → 落案例
 ```
+
+关于这套循环的几个设计点：
+
+- **分类只做一次**：已分类（known）案例不再被反复重分类。覆盖率验证与最终落地时，只对仍为 Unknown 的案例重新分类，已分类结果直接沿用（modify 改名时做一次零成本的标签重映射）。
+- **Batch Reflection 只跑一次**：它基于案例原文产出 add/modify 提议（粗料）。它不接收覆盖反馈——因为反馈针对的是「plan 覆盖不全」，而 plan 是聚合阶段的产物。
+- **覆盖反馈只回聚合**：聚合阶段职责已不限于去重合并，**可以主动扩充**（新增 add、调整 name/case_trigger 扩大覆盖面），所以由它来消化覆盖反馈最合适。聚合 prompt 要求模型先分析、再用 ```json``` 代码块输出最终方案，并写明本层最多还能新增几个类别（`max_node_count − 现有节点数`）。
+- **覆盖反馈包含三部分**：① 上一版 Update Plan；② 仍无法分类的案例（含归不进的原因）；③ 新增却一个案例都没接住的「无用 add」（提示删除）。让聚合在上一版基础上修正，而不是从头重猜。
 
 - **L1** 初始类别人工定义（`output/seed_L1.json`）。
 - **L2 及以后** 初始类别由模型直接归纳：对父类别下每个案例做总结（并行）→ 把全部总结一次性交给模型 → 模型直接归纳出该父类别下的初始子类别（不再做 embedding 聚类），数量上限由 `max_initial_node_count` 控制（prompt 提示 + 兜底截断）。初始类别只是起点，后续 Batch Reflection 仍会按需新增类别。

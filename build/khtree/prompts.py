@@ -51,7 +51,6 @@ def reflect_batch_messages(
     batch_cases: List[Case],
     categories: List[Node],
     unknown_ids: List[str],
-    feedback: str = "",
 ) -> List[Dict[str, str]]:
     system = (
         "你是知识结构优化专家。下面给出当前类别体系（每个类别仅提供 name 和 case_trigger），"
@@ -72,10 +71,9 @@ def reflect_batch_messages(
     for c in batch_cases:
         tag = "UNKNOWN(待归类)" if c.case_id in unknown_set else "已分类"
         case_lines.append(f"- [{tag}] {c.case_id} 标题：{c.case_name}；内容：{c.text}")
-    fb = f"\n\n上一轮的反馈，请据此改进：\n{feedback}" if feedback else ""
     user = (
         f"当前类别（仅 name 与 case_trigger）：\n{_categories_block(categories)}\n\n"
-        f"本批案例：\n" + "\n".join(case_lines) + fb + "\n\n"
+        f"本批案例：\n" + "\n".join(case_lines) + "\n\n"
         '请输出 JSON 数组，每个元素形如：\n'
         '新增：{"op_type":"add","name":"...","case_trigger":"...","background":"...","reason":"..."}\n'
         '修改：{"op_type":"modify","target":"<现有类别name>","name":"<新name，可选>",'
@@ -91,20 +89,36 @@ def aggregate_messages(
     proposals: List[Dict],
     categories: List[Node],
     feedback: str = "",
+    max_add: int = 0,
 ) -> List[Dict[str, str]]:
+    add_limit = (
+        f"本层当前已有 {len(categories)} 个类别，最多还能新增 {max_add} 个类别"
+        f"（即本次 add 操作数量不得超过 {max_add} 个）。"
+        if max_add and max_add > 0 else
+        "本层已无新增类别的余量，请不要再输出 add 操作，只能通过 modify 调整现有类别。"
+    )
     system = (
-        "你是知识结构优化专家。多个 batch 产生了多条修改提议（proposal），"
-        "其中可能有重复或可合并的操作。请汇总成一份精简、无冗余的最终修改方案"
-        "（Update Plan）。语义相同的新增类别应合并为一个；针对同一类别的多次修改应合并。\n\n"
-        "操作约束（与提议阶段一致）：\n"
+        "你是知识结构优化专家。多个 batch 基于案例提出了多条修改提议（proposal），"
+        "请据此产出一份精简、无冗余、且能覆盖所有案例的最终修改方案（Update Plan）。\n\n"
+        "你的职责不限于对提议去重合并——当现有提议不足以覆盖某些案例时，"
+        "你可以主动扩充：新增 add 操作，或调整 add/modify 的 name、case_trigger 使其"
+        "覆盖面更广，从而让更多案例能被归类。若反馈中指出某些新增类别实际未接住任何案例，"
+        "应删除这些无用的 add。\n\n"
+        "操作约束：\n"
         '  - add：新增类别，必须给出 name、case_trigger、background 三个字段；\n'
-        '  - modify：只能改现有类别的 name 或 case_trigger，不能改 background。'
+        '  - modify：只能改现有类别的 name 或 case_trigger，不能改 background。\n'
+        f"  - 数量上限：{add_limit}\n\n"
+        "原则：语义相同的新增类别应合并为一个；针对同一类别的多次修改应合并；"
+        "在保证覆盖的前提下尽量精简，不要产出冗余或过细的类别。\n\n"
+        "请先简要分析：哪些提议可合并、是否需要扩充、有无无用 add，"
+        "然后在最后用一个 ```json ``` 代码块输出最终的修改方案 JSON 数组。"
     )
     fb = f"\n\n反馈（请据此调整方案）：\n{feedback}" if feedback else ""
     user = (
         f"当前类别（仅 name 与 case_trigger）：\n{_categories_block(categories)}\n\n"
         f"全部提议：\n{json.dumps(proposals, ensure_ascii=False, indent=2)}{fb}\n\n"
-        "请输出汇总后的 JSON 数组，元素格式与提议相同（op_type=add/modify）。"
+        "请先给出分析，最后用 ```json``` 代码块输出汇总后的 JSON 数组，"
+        "元素格式与提议相同（op_type=add/modify）。"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
