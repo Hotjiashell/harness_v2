@@ -98,6 +98,8 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 - **L2 及以后** 初始类别由模型直接归纳：对父类别下每个案例做总结（并行）→ 把全部总结一次性交给模型 → 模型直接归纳出该父类别下的初始子类别（不再做 embedding 聚类）。
 - 逐层递归直到 `max_depth`；类别下案例数小于 `min_cases_to_split` 不再分裂。
 
+> 字段使用约定（阶段一）：**案例分类**与**生成/汇总修改操作**时，只把每个类别的 `name` 与 `case_trigger` 交给模型（不含 `background`）。修改操作（modify）也只允许改 `name` 或 `case_trigger`；新增操作（add）则要求同时写 `name`、`case_trigger`、`background` 三个字段（提示词中已说明三字段含义）。`background` 与 `dialog_trigger` 主要留待阶段二基于对话数据优化。
+
 ### 阶段二：基于对话优化节点内容（`optimize.py`）
 
 不新增/删除节点，只优化已有节点的 `dialog_trigger` 或 `background`：

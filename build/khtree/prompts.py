@@ -12,16 +12,17 @@ from typing import Dict, List
 from .models import Case, Node
 
 
-def _categories_block(categories: List[Node]) -> str:
+def _categories_block(categories: List[Node], include_background: bool = False) -> str:
+    """渲染候选类别列表。
+
+    分类与生成修改操作时只暴露 name 与 case_trigger（不含 background）。
+    """
     items = []
-    for i, c in enumerate(categories):
-        items.append(
-            {
-                "name": c.name,
-                "case_trigger": c.case_trigger,
-                "background": c.background,
-            }
-        )
+    for c in categories:
+        item = {"name": c.name, "case_trigger": c.case_trigger}
+        if include_background:
+            item["background"] = c.background
+        items.append(item)
     return json.dumps(items, ensure_ascii=False, indent=2)
 
 
@@ -30,12 +31,13 @@ def _categories_block(categories: List[Node]) -> str:
 # ---------------------------------------------------------------------------
 def classify_messages(case: Case, categories: List[Node]) -> List[Dict[str, str]]:
     system = (
-        "你是一个知识分类助手。给定若干候选类别和一条案例，"
-        "判断该案例应归入哪个类别。若都不合适，返回 UNKNOWN。"
+        "你是一个知识分类助手。给定若干候选类别（每个类别提供 name 和 case_trigger，"
+        "case_trigger 描述什么样的案例应归入该类别）和一条案例，"
+        "依据 case_trigger 判断该案例应归入哪个类别。若都不合适，返回 UNKNOWN。"
         "只能从给定类别的 name 中选择，或返回 UNKNOWN。"
     )
     user = (
-        f"候选类别：\n{_categories_block(categories)}\n\n"
+        f"候选类别（仅 name 与 case_trigger）：\n{_categories_block(categories)}\n\n"
         f"案例：\n标题：{case.case_name}\n内容：{case.text}\n\n"
         '请输出 JSON：{"category": "<类别name或UNKNOWN>", "reason": "<判断理由>"}'
     )
@@ -52,12 +54,17 @@ def reflect_batch_messages(
     feedback: str = "",
 ) -> List[Dict[str, str]]:
     system = (
-        "你是知识结构优化专家。下面给出当前类别体系，以及一批案例"
-        "（其中部分无法归入现有类别，已标注 UNKNOWN）。请分析这批案例，"
-        "提出修改操作，使得这些案例都能被合理归类。\n"
+        "你是知识结构优化专家。下面给出当前类别体系（每个类别仅提供 name 和 case_trigger），"
+        "以及一批案例（其中部分无法归入现有类别，已标注 UNKNOWN）。请分析这批案例，"
+        "提出修改操作，使得这些案例都能被合理归类。\n\n"
+        "类别的三个字段含义：\n"
+        "  - name：类别名称。\n"
+        "  - case_trigger：针对案例的触发条件，即什么样的案例应归入该类别。\n"
+        "  - background：该领域的相关背景知识（如术语定义、原理、常见处理经验）。\n\n"
         "仅允许两种操作：\n"
-        '  1) add：新增一个类别，需给出 name/case_trigger/background；\n'
-        '  2) modify：修改现有类别的 name/case_trigger/background（target 指向现有类别 name）。\n'
+        '  1) add：新增一个类别，必须同时给出 name、case_trigger、background 三个字段；\n'
+        '  2) modify：修改现有类别，只能改 name 或 case_trigger（不能改 background），'
+        "target 指向现有类别 name。\n\n"
         "尽量复用已有类别，只有确实无法归入时才新增。"
     )
     case_lines = []
@@ -67,12 +74,12 @@ def reflect_batch_messages(
         case_lines.append(f"- [{tag}] {c.case_id} 标题：{c.case_name}；内容：{c.text}")
     fb = f"\n\n上一轮的反馈，请据此改进：\n{feedback}" if feedback else ""
     user = (
-        f"当前类别：\n{_categories_block(categories)}\n\n"
+        f"当前类别（仅 name 与 case_trigger）：\n{_categories_block(categories)}\n\n"
         f"本批案例：\n" + "\n".join(case_lines) + fb + "\n\n"
         '请输出 JSON 数组，每个元素形如：\n'
-        '{"op_type":"add","name":"...","case_trigger":"...","background":"...","reason":"..."}\n'
-        '或 {"op_type":"modify","target":"<现有类别name>","name":"<新name可选>",'
-        '"case_trigger":"<可选>","background":"<可选>","reason":"..."}'
+        '新增：{"op_type":"add","name":"...","case_trigger":"...","background":"...","reason":"..."}\n'
+        '修改：{"op_type":"modify","target":"<现有类别name>","name":"<新name，可选>",'
+        '"case_trigger":"<新case_trigger，可选>","reason":"..."}'
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -88,11 +95,14 @@ def aggregate_messages(
     system = (
         "你是知识结构优化专家。多个 batch 产生了多条修改提议（proposal），"
         "其中可能有重复或可合并的操作。请汇总成一份精简、无冗余的最终修改方案"
-        "（Update Plan）。语义相同的新增类别应合并为一个；针对同一类别的多次修改应合并。"
+        "（Update Plan）。语义相同的新增类别应合并为一个；针对同一类别的多次修改应合并。\n\n"
+        "操作约束（与提议阶段一致）：\n"
+        '  - add：新增类别，必须给出 name、case_trigger、background 三个字段；\n'
+        '  - modify：只能改现有类别的 name 或 case_trigger，不能改 background。'
     )
     fb = f"\n\n反馈（请据此调整方案）：\n{feedback}" if feedback else ""
     user = (
-        f"当前类别：\n{_categories_block(categories)}\n\n"
+        f"当前类别（仅 name 与 case_trigger）：\n{_categories_block(categories)}\n\n"
         f"全部提议：\n{json.dumps(proposals, ensure_ascii=False, indent=2)}{fb}\n\n"
         "请输出汇总后的 JSON 数组，元素格式与提议相同（op_type=add/modify）。"
     )

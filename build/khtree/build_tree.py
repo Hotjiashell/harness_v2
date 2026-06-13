@@ -455,12 +455,11 @@ class CaseTreeBuilder:
                     target = parent.find_by_name(op.target) or parent.find_by_name(op.name)
                     if target is None:
                         continue
+                    # 阶段一的 modify 只允许改 name 或 case_trigger（不改 background）
                     if op.name and op.name != target.name:
                         target.name = op.name
                     if op.case_trigger:
                         target.case_trigger = op.case_trigger
-                    if op.background:
-                        target.background = op.background
             except Exception as exc:  # noqa: BLE001
                 self.recorder.record("apply_plan", exc, context=str(op.to_dict())[:200])
 
