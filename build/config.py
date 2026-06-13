@@ -67,6 +67,7 @@ BUILD = BuildSettings(
     batch_size=8,           # 每个 batch 总大小
     unknown_per_batch=4,    # 每个 batch 中无法归类案例的目标数量
     max_node_count=12,      # Complexity Check：单层最大节点数
+    max_initial_node_count=8,  # L2+ 归纳初始子类别时最多产出的类别数
     max_plan_retries=3,     # Coverage Validation 最大重试次数
     max_complexity_retries=3,  # Complexity Check 失败后重生成 Update Plan 的最大次数
     min_cases_to_split=3,   # 类别下案例数少于该值则不再向下分裂

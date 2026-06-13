@@ -54,6 +54,8 @@ class BuildSettings:
     batch_size: int = 8
     unknown_per_batch: int = 4
     max_node_count: int = 12
+    # L2 及以后，归纳初始子类别时最多产出的类别数
+    max_initial_node_count: int = 8
     max_plan_retries: int = 3
     max_complexity_retries: int = 3
     min_cases_to_split: int = 3

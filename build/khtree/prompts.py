@@ -126,12 +126,16 @@ def summarize_case_messages(case: Case, parent: Node) -> List[Dict[str, str]]:
 
 
 def discover_categories_messages(
-    summaries: List[str], parent: Node
+    summaries: List[str], parent: Node, max_count: int = 0
 ) -> List[Dict[str, str]]:
+    limit = (
+        f"最多归纳出 {max_count} 个子类别（不要超过这个数量）。"
+        if max_count and max_count > 0 else ""
+    )
     system = (
         "你是知识结构设计专家。下面给出某个父类别之下全部案例的总结。"
         "请综观所有总结，直接归纳出父类别之下一组互斥、覆盖完整、粒度适中的初始子类别。"
-        "类别数量应与案例的内在主题数相匹配，不要过细也不要过粗。"
+        "类别数量应与案例的内在主题数相匹配，不要过细也不要过粗。" + limit
     )
     body = "\n".join(f"- {s}" for s in summaries)
     user = (

@@ -190,14 +190,22 @@ class LLMClient:
         return str(data.get("summary", case.case_name))
 
     async def discover_categories(
-        self, summaries: List[str], parent: Node
+        self, summaries: List[str], parent: Node, max_count: int = 0
     ) -> List[Dict]:
-        """把父类别下所有案例总结一次性交给模型，直接归纳出初始子类别。"""
+        """把父类别下所有案例总结一次性交给模型，直接归纳出初始子类别。
+
+        max_count > 0 时，最多产出 max_count 个子类别（prompt 内提示 + 兜底截断）。
+        """
         if self.provider == "mock":
-            return self._mock_discover_categories(summaries, parent)
-        msgs = prompts.discover_categories_messages(summaries, parent)
-        data = extract_json(await self._chat(msgs))
-        return data if isinstance(data, list) else []
+            cats = self._mock_discover_categories(summaries, parent)
+        else:
+            msgs = prompts.discover_categories_messages(summaries, parent, max_count)
+            data = extract_json(await self._chat(msgs))
+            cats = data if isinstance(data, list) else []
+        # 兜底：模型可能不遵守数量约束，硬截断
+        if max_count and max_count > 0 and len(cats) > max_count:
+            cats = cats[:max_count]
+        return cats
 
     def _mock_discover_categories(self, summaries: List[str], parent: Node) -> List[Dict]:
         # 按案例总结中的领域实体分组，每个实体形成一个子类别

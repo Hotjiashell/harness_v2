@@ -175,7 +175,9 @@ class CaseTreeBuilder:
 
         # 2. 把父类别下所有案例总结一次性交给模型，让其直接归纳出初始子类别
         all_summaries = [s for _, s in pairs]
-        final_cats = await self.llm.discover_categories(all_summaries, parent)
+        final_cats = await self.llm.discover_categories(
+            all_summaries, parent, max_count=self.config.build.max_initial_node_count
+        )
         self._dump(f"L{level}_{parent.name}_init_categories", final_cats)
 
         nodes = []
@@ -252,14 +254,17 @@ class CaseTreeBuilder:
             log(f"{scope} 达到最大重试次数仍未通过，使用最后一版 plan 强制执行并兜底。",
                 stage="WARN")
             accepted_plan = plan
-            # 强制执行并对仍 UNKNOWN 的案例兜底
-            self._apply_plan(parent, accepted_plan)
-            classifications = await self._classify_all(parent.children, cases, scope)
-            self._fallback_unknown(parent, cases, classifications)
-        else:
-            self._apply_plan(parent, accepted_plan)
-            classifications = await self._classify_all(parent.children, cases, scope)
-            self._fallback_unknown(parent, cases, classifications)
+
+        self._apply_plan(parent, accepted_plan)
+        # plan 可能改了某些类别的 name，先把已有分类标签按改名做重映射
+        classifications = self._remap_renames(accepted_plan, classifications)
+        # 只对仍 UNKNOWN 的案例重新分类；已分类案例沿用之前结果，避免全量重分类。
+        # （接受分支里 classifications 已是覆盖率验证合并好的完整结果，此处为 no-op；
+        #   强制执行分支里则需要把原 UNKNOWN 案例按新类别再分一次。）
+        classifications = await self._reclassify_unknowns(
+            parent.children, cases, classifications, scope
+        )
+        self._fallback_unknown(parent, cases, classifications)
 
         # ---- 7. 把案例落到各子类别 ----
         self._assign_cases(parent, classifications)
@@ -289,6 +294,39 @@ class CaseTreeBuilder:
             else:
                 out.append(r)
         return out
+
+    def _remap_renames(
+        self, plan: List[Operation], classifications: List[ClassificationResult]
+    ) -> List[ClassificationResult]:
+        """plan 里的 MODIFY 可能改类别 name，把已有分类标签按 旧name->新name 重映射。"""
+        rename: Dict[str, str] = {}
+        for op in plan:
+            if op.op_type == MODIFY and op.name and op.target and op.name != op.target:
+                rename[op.target] = op.name
+        if not rename:
+            return classifications
+        for r in classifications:
+            if r.category in rename:
+                r.category = rename[r.category]
+        return classifications
+
+    async def _reclassify_unknowns(
+        self, categories: List[Node], cases: List[Case],
+        classifications: List[ClassificationResult], scope: str,
+    ) -> List[ClassificationResult]:
+        """只对仍 UNKNOWN 的案例重新分类，已分类案例沿用原结果。"""
+        by_id = {r.case_id: r for r in classifications}
+        unknown_cases = [c for c in cases if by_id.get(c.case_id) is None
+                         or by_id[c.case_id].is_unknown()]
+        if not unknown_cases:
+            return classifications
+        log(f"{scope} 仅对 {len(unknown_cases)} 个 UNKNOWN 案例重新分类"
+            f"（{len(cases) - len(unknown_cases)} 个已分类案例沿用原结果）", stage="BUILD")
+        recls = await self._classify_all(categories, unknown_cases, scope)
+        for r in recls:
+            by_id[r.case_id] = r
+        # 保持与 cases 一致的顺序
+        return [by_id[c.case_id] for c in cases if c.case_id in by_id]
 
     # -- Batch Reflection ----------------------------------------------------
     async def _batch_reflection(

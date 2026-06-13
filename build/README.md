@@ -95,7 +95,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 ```
 
 - **L1** 初始类别人工定义（`output/seed_L1.json`）。
-- **L2 及以后** 初始类别由模型直接归纳：对父类别下每个案例做总结（并行）→ 把全部总结一次性交给模型 → 模型直接归纳出该父类别下的初始子类别（不再做 embedding 聚类）。
+- **L2 及以后** 初始类别由模型直接归纳：对父类别下每个案例做总结（并行）→ 把全部总结一次性交给模型 → 模型直接归纳出该父类别下的初始子类别（不再做 embedding 聚类），数量上限由 `max_initial_node_count` 控制（prompt 提示 + 兜底截断）。初始类别只是起点，后续 Batch Reflection 仍会按需新增类别。
 - 逐层递归直到 `max_depth`；类别下案例数小于 `min_cases_to_split` 不再分裂。
 
 > 字段使用约定（阶段一）：**案例分类**与**生成/汇总修改操作**时，只把每个类别的 `name` 与 `case_trigger` 交给模型（不含 `background`）。修改操作（modify）也只允许改 `name` 或 `case_trigger`；新增操作（add）则要求同时写 `name`、`case_trigger`、`background` 三个字段（提示词中已说明三字段含义）。`background` 与 `dialog_trigger` 主要留待阶段二基于对话数据优化。
@@ -131,6 +131,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 | Batch 大小 | `BUILD.batch_size` | |
 | 每 Batch 无法归类案例数 | `BUILD.unknown_per_batch` | |
 | MaxNodeCount | `BUILD.max_node_count` | Complexity Check 上限 |
+| 初始类别数上限 | `BUILD.max_initial_node_count` | L2+ 归纳初始子类别时最多产出的类别数 |
 | 覆盖率验证重试次数 | `BUILD.max_plan_retries` | |
 | 复杂度检查重试次数 | `BUILD.max_complexity_retries` | |
 | 不再分裂阈值 | `BUILD.min_cases_to_split` | 类别下案例数低于此值不向下分层 |
