@@ -115,30 +115,19 @@ def summarize_case_messages(case: Case, parent: Node) -> List[Dict[str, str]]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def label_cluster_messages(summaries: List[str], parent: Node) -> List[Dict[str, str]]:
-    system = (
-        "你是领域专家。下面是同一聚类簇内若干案例的总结。请为该簇总结出 1-3 个"
-        "候选子类别（属于父类别之下）。"
-    )
-    user = (
-        f"父类别：{parent.name}\n父类别背景：{parent.background}\n\n"
-        f"簇内案例总结：\n" + "\n".join(f"- {s}" for s in summaries) + "\n\n"
-        '请输出 JSON 数组：[{"name":"...","case_trigger":"...","background":"..."}]（1-3个）'
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def synthesize_categories_messages(
-    candidate_categories: List[Dict], parent: Node
+def discover_categories_messages(
+    summaries: List[str], parent: Node
 ) -> List[Dict[str, str]]:
     system = (
-        "你是知识结构设计专家。下面是各聚类簇分别提出的候选子类别集合。"
-        "请综观全部候选，去重、归并、提炼，给出父类别之下一组互斥、覆盖完整的初始子类别。"
+        "你是知识结构设计专家。下面给出某个父类别之下全部案例的总结。"
+        "请综观所有总结，直接归纳出父类别之下一组互斥、覆盖完整、粒度适中的初始子类别。"
+        "类别数量应与案例的内在主题数相匹配，不要过细也不要过粗。"
     )
+    body = "\n".join(f"- {s}" for s in summaries)
     user = (
         f"父类别：{parent.name}\n父类别背景：{parent.background}\n\n"
-        f"全部候选子类别：\n{json.dumps(candidate_categories, ensure_ascii=False, indent=2)}\n\n"
-        '请输出最终初始子类别 JSON 数组：[{"name":"...","case_trigger":"...","background":"..."}]'
+        f"该父类别下全部案例总结：\n{body}\n\n"
+        '请输出初始子类别 JSON 数组：[{"name":"...","case_trigger":"...","background":"..."}]'
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 

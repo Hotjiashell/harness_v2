@@ -49,17 +49,6 @@ class LLMSettings:
 
 
 @dataclass
-class ClusterSettings:
-    method: str = "kmeans"
-    n_clusters: int = 4
-    min_cluster_size: int = 2
-    embedding_concurrency: int = 5
-    embedding_model: str = "text-embedding-3-small"
-    embedding_url: str = "http://localhost:8000/embeddings"
-    embedding_api_key: str = "1234"
-
-
-@dataclass
 class BuildSettings:
     max_depth: int = 2
     batch_size: int = 8
@@ -82,13 +71,18 @@ class RuntimeSettings:
     log_timestamps: bool = True
     use_tqdm: bool = True
     random_seed: int = 42
+    # 运行阶段控制：
+    #   "build"    只跑阶段一（基于案例库构建知识树）
+    #   "all"      构建后接着跑阶段二（基于对话优化节点内容）
+    # 命令行子命令（build/optimize/all）会覆盖该默认值。
+    run_stage: str = "all"
 
 
 @dataclass
 class HarnessConfig:
     paths: PathSettings
     llm: LLMSettings = field(default_factory=LLMSettings)
-    cluster: ClusterSettings = field(default_factory=ClusterSettings)
+    build: BuildSettings = field(default_factory=BuildSettings)
     build: BuildSettings = field(default_factory=BuildSettings)
     optimize: OptimizeSettings = field(default_factory=OptimizeSettings)
     runtime: RuntimeSettings = field(default_factory=RuntimeSettings)

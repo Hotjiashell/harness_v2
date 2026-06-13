@@ -18,7 +18,6 @@ import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .clustering import cluster_texts
 from .config_types import HarnessConfig
 from .llm import LLMClient
 from .models import (
@@ -112,7 +111,8 @@ class CaseTreeBuilder:
                             f"{self.config.build.min_cases_to_split}，不再分裂。", stage="BUILD")
                         continue
                     # 聚类得到初始子类别
-                    init_cats = await self._init_categories_by_cluster(parent, subset, level)
+                    # 直接由模型从案例总结中归纳初始子类别
+                    init_cats = await self._init_categories(parent, subset, level)
                     if not init_cats:
                         log(f"父类别 [{parent.name}] 聚类未得到初始类别，跳过。", stage="BUILD")
                         continue
@@ -148,14 +148,14 @@ class CaseTreeBuilder:
         return result
 
     # =======================================================================
-    # L2+ 初始类别：聚类
+    # L2+ 初始类别：直接由模型从案例总结中归纳
     # =======================================================================
-    async def _init_categories_by_cluster(
+    async def _init_categories(
         self, parent: Node, cases: List[Case], level: int
     ) -> List[Node]:
-        stage_banner(f"L{level} 父类别[{parent.name}] 聚类生成初始子类别")
+        stage_banner(f"L{level} 父类别[{parent.name}] 归纳初始子类别")
 
-        # 1. 对每个案例做总结
+        # 1. 对每个案例做总结（并行）
         summaries = await gather_limited(
             cases,
             lambda c: self.llm.summarize_case(c, parent),
@@ -173,46 +173,9 @@ class CaseTreeBuilder:
         if not pairs:
             return []
 
-        # 2. embedding 聚类
-        texts = [s for _, s in pairs]
-        clustered = await cluster_texts(texts, self.config.cluster)
-        # 组织簇 -> summaries
-        cluster_map: Dict[int, List[str]] = {}
-        for item in clustered:
-            cid = int(item.get("cluster_id", -1))
-            cluster_map.setdefault(cid, []).append(item.get("text", ""))
-        self._dump(
-            f"L{level}_{parent.name}_clusters",
-            {str(k): v for k, v in cluster_map.items()},
-        )
-
-        # 3. 每个簇总结 1-3 个候选子类别（并行）
-        cluster_items = [(cid, sums) for cid, sums in cluster_map.items() if cid != -1 and sums]
-        # HDBSCAN 噪声点(-1)也单独成簇处理
-        noise = cluster_map.get(-1)
-        if noise:
-            for s in noise:
-                cluster_items.append((f"noise-{len(cluster_items)}", [s]))
-
-        labeled = await gather_limited(
-            cluster_items,
-            lambda it: self.llm.label_cluster(it[1], parent),
-            concurrency=self.config.llm.concurrency,
-            desc=f"label_cluster[{parent.name}]",
-            use_tqdm=self.config.runtime.use_tqdm,
-            recorder=self.recorder,
-            where="label_cluster",
-        )
-        candidates: List[Dict] = []
-        for lab in labeled:
-            if lab:
-                candidates.extend(lab)
-        self._dump(f"L{level}_{parent.name}_candidate_categories", candidates)
-        if not candidates:
-            return []
-
-        # 4. 综观所有候选，合成最终初始子类别
-        final_cats = await self.llm.synthesize_categories(candidates, parent)
+        # 2. 把父类别下所有案例总结一次性交给模型，让其直接归纳出初始子类别
+        all_summaries = [s for _, s in pairs]
+        final_cats = await self.llm.discover_categories(all_summaries, parent)
         self._dump(f"L{level}_{parent.name}_init_categories", final_cats)
 
         nodes = []

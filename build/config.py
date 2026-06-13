@@ -17,7 +17,6 @@ if str(BUILD_DIR) not in sys.path:
 
 from khtree.config_types import (  # noqa: E402
     BuildSettings,
-    ClusterSettings,
     HarnessConfig,
     LLMSettings,
     OptimizeSettings,
@@ -61,20 +60,6 @@ LLM = LLMSettings(
 
 
 # ---------------------------------------------------------------------------
-# 聚类配置（L2 及以后初始类别）。默认 K-Means，兼容 hdbscan。
-# ---------------------------------------------------------------------------
-CLUSTER = ClusterSettings(
-    method="kmeans",
-    n_clusters=4,
-    min_cluster_size=2,
-    embedding_concurrency=5,
-    embedding_model="text-embedding-3-small",
-    embedding_url="http://localhost:8000/embeddings",
-    embedding_api_key="1234",
-)
-
-
-# ---------------------------------------------------------------------------
 # 阶段一：基于案例数据的知识树构建
 # ---------------------------------------------------------------------------
 BUILD = BuildSettings(
@@ -105,13 +90,14 @@ RUNTIME = RuntimeSettings(
     log_timestamps=True,
     use_tqdm=True,
     random_seed=42,
+    # "build" 只跑完基于案例库的知识树构建；"all" 构建后继续基于对话优化节点内容。
+    run_stage="all",
 )
 
 
 CONFIG = HarnessConfig(
     paths=PATHS,
     llm=LLM,
-    cluster=CLUSTER,
     build=BUILD,
     optimize=OPTIMIZE,
     runtime=RUNTIME,

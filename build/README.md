@@ -15,7 +15,6 @@ build/
 │   ├── utils.py         # 日志、IO、错误记录、并发、JSON 解析
 │   ├── llm.py           # 异步 LLM 客户端（openai / mock 两种 provider）
 │   ├── prompts.py       # 提示词模板
-│   ├── clustering.py    # 聚类适配器（调用根 cluster.py，带离线回退）
 │   ├── retrieval.py     # 检索适配器（调用根 retrieve.py，带离线回退）
 │   ├── build_tree.py    # 阶段一：基于案例库构建知识树
 │   └── optimize.py      # 阶段二：基于对话数据优化节点内容
@@ -53,6 +52,20 @@ python3 build/run.py all
 python3 print_tree.py build/output/knowledge_tree.json
 ```
 
+### 按配置决定跑到哪一步
+
+不带子命令运行时，按 `config.py` 的 `RUNTIME.run_stage` 决定：
+
+- `run_stage="build"`：只跑完阶段一（基于案例库构建知识树）。
+- `run_stage="all"`：阶段一构建完成后，接着跑阶段二（基于对话优化节点内容）。
+
+```bash
+# 等价于按 config.runtime.run_stage 运行（build 或 all）
+python3 build/run.py
+```
+
+显式子命令（`build` / `optimize` / `all`）会覆盖该配置默认值。
+
 ### 续跑
 
 ```bash
@@ -72,7 +85,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 逐层构建，每一层执行：
 
 ```
-指定/聚类初始类别
+指定/归纳初始类别
   → 案例分类 (Classification, 并行)
   → Batch Reflection (并行) → Proposals
   → Proposal Aggregation → Update Plan
@@ -82,7 +95,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 ```
 
 - **L1** 初始类别人工定义（`output/seed_L1.json`）。
-- **L2 及以后** 初始类别由聚类生成：对每个案例总结 → embedding 聚类 → 每簇总结 1-3 个候选子类别 → 综观全部候选合成最终初始类别。聚类调用根目录 `cluster.py`（默认 K-Means，兼容 HDBSCAN）。
+- **L2 及以后** 初始类别由模型直接归纳：对父类别下每个案例做总结（并行）→ 把全部总结一次性交给模型 → 模型直接归纳出该父类别下的初始子类别（不再做 embedding 聚类）。
 - 逐层递归直到 `max_depth`；类别下案例数小于 `min_cases_to_split` 不再分裂。
 
 ### 阶段二：基于对话优化节点内容（`optimize.py`）
@@ -105,6 +118,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 
 | 配置 | 字段 | 说明 |
 |------|------|------|
+| 运行阶段 | `RUNTIME.run_stage` | `build` 只构建 / `all` 构建后接着优化（不带子命令时生效） |
 | 案例库路径 | `PATHS.case_path` | |
 | 对话训练/验证集路径 | `PATHS.dialog_train_path` / `dialog_val_path` | |
 | L1 种子类别路径 | `PATHS.seed_l1_path` | |
@@ -117,7 +131,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 | MaxNodeCount | `BUILD.max_node_count` | Complexity Check 上限 |
 | 覆盖率验证重试次数 | `BUILD.max_plan_retries` | |
 | 复杂度检查重试次数 | `BUILD.max_complexity_retries` | |
-| 聚类方法/参数 | `CLUSTER.*` | 默认 `kmeans`，兼容 `hdbscan` |
+| 不再分裂阈值 | `BUILD.min_cases_to_split` | 类别下案例数低于此值不向下分层 |
 | 优化反思重试次数 | `OPTIMIZE.max_reflection_retries` | |
 
 ## 关于 provider

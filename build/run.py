@@ -91,7 +91,7 @@ async def run_build(args) -> Tree:
         "max_depth": CONFIG.build.max_depth, "batch_size": CONFIG.build.batch_size,
         "unknown_per_batch": CONFIG.build.unknown_per_batch,
         "max_node_count": CONFIG.build.max_node_count,
-        "cluster_method": CONFIG.cluster.method,
+        "run_stage": CONFIG.runtime.run_stage,
     })
 
     resume_tree = None
@@ -163,7 +163,7 @@ def _print_tree(tree: Tree, node=None, prefix: str = "") -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="层级化知识树构建与优化框架")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd", required=False)
 
     p_build = sub.add_parser("build", help="阶段一：基于案例库构建知识树")
     p_build.add_argument("--resume", type=str, default=None,
@@ -181,12 +181,24 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if args.cmd == "build":
+    # 未显式指定子命令时，按 config.py 的 runtime.run_stage 决定跑到哪一步
+    cmd = args.cmd
+    if cmd is None:
+        cmd = CONFIG.runtime.run_stage
+        # 补齐缺省参数
+        for name, default in (("resume", None), ("from_level", 1), ("tree", None)):
+            if not hasattr(args, name):
+                setattr(args, name, default)
+        log(f"未指定子命令，按 config.runtime.run_stage = '{cmd}' 运行", stage="INIT")
+
+    if cmd == "build":
         asyncio.run(run_build(args))
-    elif args.cmd == "optimize":
+    elif cmd == "optimize":
         asyncio.run(run_optimize(args))
-    elif args.cmd == "all":
+    elif cmd == "all":
         asyncio.run(run_all(args))
+    else:
+        parser.error(f"未知运行阶段: {cmd}（应为 build/optimize/all）")
     return 0
 
 

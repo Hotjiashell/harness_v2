@@ -180,7 +180,7 @@ class LLMClient:
         # 若有反馈要求减少 add，则按 name 前缀做一次粗合并（mock 简单处理：保留全部）
         return result
 
-    # -- L2+ 聚类初始化 -----------------------------------------------------
+    # -- L2+ 初始类别归纳 ---------------------------------------------------
     async def summarize_case(self, case: Case, parent: Node) -> str:
         if self.provider == "mock":
             entity = _detect_entity(case.to_text()) or parent.name
@@ -189,47 +189,50 @@ class LLMClient:
         data = extract_json(await self._chat(msgs))
         return str(data.get("summary", case.case_name))
 
-    async def label_cluster(self, summaries: List[str], parent: Node) -> List[Dict]:
-        if self.provider == "mock":
-            return self._mock_label_cluster(summaries, parent)
-        msgs = prompts.label_cluster_messages(summaries, parent)
-        data = extract_json(await self._chat(msgs))
-        return data if isinstance(data, list) else []
-
-    def _mock_label_cluster(self, summaries: List[str], parent: Node) -> List[Dict]:
-        # 以簇内出现最多的关键词作为子类别名
-        from collections import Counter
-        counter: Counter = Counter()
-        for s in summaries:
-            for token in re.split(r"[：:，,。\s]+", s):
-                token = token.strip()
-                if len(token) >= 2:
-                    counter[token] += 1
-        if not counter:
-            name = f"{parent.name}-子类"
-        else:
-            name = counter.most_common(1)[0][0]
-        return [{
-            "name": f"{parent.name}-{name}",
-            "case_trigger": f"涉及 {name} 的 {parent.name} 子问题",
-            "background": f"{parent.name} 下关于 {name} 的处理经验",
-        }]
-
-    async def synthesize_categories(
-        self, candidate_categories: List[Dict], parent: Node
+    async def discover_categories(
+        self, summaries: List[str], parent: Node
     ) -> List[Dict]:
+        """把父类别下所有案例总结一次性交给模型，直接归纳出初始子类别。"""
         if self.provider == "mock":
-            # 去重（按 name）
-            seen, out = set(), []
-            for c in candidate_categories:
-                nm = str(c.get("name", "")).strip()
-                if nm and nm not in seen:
-                    seen.add(nm)
-                    out.append(c)
-            return out
-        msgs = prompts.synthesize_categories_messages(candidate_categories, parent)
+            return self._mock_discover_categories(summaries, parent)
+        msgs = prompts.discover_categories_messages(summaries, parent)
         data = extract_json(await self._chat(msgs))
         return data if isinstance(data, list) else []
+
+    def _mock_discover_categories(self, summaries: List[str], parent: Node) -> List[Dict]:
+        # 按案例总结中的领域实体分组，每个实体形成一个子类别
+        from collections import Counter
+        entity_counter: Counter = Counter()
+        for s in summaries:
+            ent = _detect_entity(s)
+            if ent:
+                entity_counter[ent] += 1
+        cats: List[Dict] = []
+        seen = set()
+        for ent, _cnt in entity_counter.most_common():
+            if ent in seen:
+                continue
+            seen.add(ent)
+            cats.append({
+                "name": f"{parent.name}-{ent}",
+                "case_trigger": f"涉及 {ent} 的 {parent.name} 子问题",
+                "background": f"{parent.name} 下关于 {ent} 的处理经验",
+            })
+        if not cats:
+            # 退化：用高频关键词作为单一子类别
+            counter: Counter = Counter()
+            for s in summaries:
+                for token in re.split(r"[：:，,。\s]+", s):
+                    token = token.strip()
+                    if len(token) >= 2:
+                        counter[token] += 1
+            name = counter.most_common(1)[0][0] if counter else "子类"
+            cats = [{
+                "name": f"{parent.name}-{name}",
+                "case_trigger": f"涉及 {name} 的 {parent.name} 子问题",
+                "background": f"{parent.name} 下关于 {name} 的处理经验",
+            }]
+        return cats
 
     # =======================================================================
     # 阶段二：基于对话
