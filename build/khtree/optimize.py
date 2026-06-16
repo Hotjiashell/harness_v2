@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Dict, List, Optional, Tuple
 
 from .config_types import HarnessConfig
@@ -60,6 +61,27 @@ class DialogOptimizer:
         self.recorder = recorder
         self.retriever = Retriever(cases)
         self._step = 0
+        # 优化前快照：所有 batch 的验证都基于这份"未改动"的树，使各 batch 互相解耦、可并行。
+        #   _orig_trigger / _orig_background：各节点原始 dialog_trigger / background
+        #   _layer_siblings：各节点所在层（同父）的全部兄弟节点名，用于 trigger 验证重建候选
+        self._orig_trigger: Dict[str, str] = {}
+        self._orig_background: Dict[str, str] = {}
+        self._layer_siblings: Dict[str, List[str]] = {}
+        self._build_snapshot()
+        # 全局共享并发闸：无论多少 batch 并行，真正在途的 LLM/检索调用数 ≤ concurrency。
+        # 延迟到 optimize() 内（事件循环已就绪）创建，避免 Semaphore 绑定到错误的 loop。
+        self._sem: Optional[asyncio.Semaphore] = None
+
+    def _build_snapshot(self) -> None:
+        def walk(n: Node) -> None:
+            self._orig_trigger[n.name] = n.dialog_trigger
+            self._orig_background[n.name] = n.background
+            sibling_names = [c.name for c in n.children]
+            for c in n.children:
+                self._layer_siblings[c.name] = sibling_names
+                walk(c)
+
+        walk(self.tree.root)
 
     def _dump(self, tag: str, data) -> None:
         self._step += 1
@@ -71,6 +93,7 @@ class DialogOptimizer:
     # =======================================================================
     async def optimize(self) -> Tree:
         stage_banner("阶段二：基于对话数据优化节点内容")
+        self._sem = asyncio.Semaphore(max(1, self.config.llm.concurrency))
 
         # 基线召回率（仅作整体观测，不参与接受判定）
         base_recall = await self._eval_recall(self.dialogs, "baseline")
@@ -94,23 +117,20 @@ class DialogOptimizer:
              for (name, problem), samples in batches.items()},
         )
 
-        # 先处理所有 trigger batch（修好导航），再处理所有 background batch（导航到位后优化 query）
-        trigger_batches = {k: v for k, v in batches.items() if k[1] == "trigger"}
-        background_batches = {k: v for k, v in batches.items() if k[1] == "background"}
-
-        for (node_name, _), samples in trigger_batches.items():
+        # 所有 batch（trigger / background）完全并行：每个 batch 的验证都基于优化前快照，
+        # 互不依赖；总并发由共享 semaphore 统一限制在 config.llm.concurrency 内。
+        async def _run_batch(key: Tuple[str, str], samples: List[Dict]) -> None:
+            node_name, problem = key
             node = self._find_node(node_name)
             if node is None:
-                log(f"归因节点 [{node_name}] 不存在，跳过 trigger batch。", stage="WARN")
-                continue
-            await self._refine_trigger_batch(node, samples)
+                log(f"归因节点 [{node_name}] 不存在，跳过 {problem} batch。", stage="WARN")
+                return
+            if problem == "trigger":
+                await self._refine_trigger_batch(node, samples)
+            else:
+                await self._refine_background_batch(node, samples)
 
-        for (node_name, _), samples in background_batches.items():
-            node = self._find_node(node_name)
-            if node is None:
-                log(f"归因节点 [{node_name}] 不存在，跳过 background batch。", stage="WARN")
-                continue
-            await self._refine_background_batch(node, samples)
+        await asyncio.gather(*[_run_batch(k, v) for k, v in batches.items()])
 
         final_recall = await self._eval_recall(self.dialogs, "final")
         log(f"优化后召回率：{base_recall:.3f} -> {final_recall:.3f}", stage="OPTIMIZE")
@@ -291,33 +311,39 @@ class DialogOptimizer:
         return batches
 
     # =======================================================================
-    # trigger batch：修改节点 trigger -> 在该节点所在层重导航验证
+    # trigger batch：改节点 trigger -> 在该节点所在层（快照兄弟）重导航验证
     # =======================================================================
     async def _refine_trigger_batch(self, node: Node, samples: List[Dict]) -> None:
         scope = f"node[{node.name}].trigger"
-        stage_banner(f"优化 {scope}：{len(samples)} 个失败样本")
+        log(f"优化 {scope}：{len(samples)} 个失败样本", stage="OPTIMIZE")
 
-        parent = self._find_parent(node.name)
-        if parent is None or not parent.children:
-            log(f"{scope} 找不到父层，跳过。", stage="WARN")
+        sibling_names = self._layer_siblings.get(node.name)
+        if not sibling_names:
+            log(f"{scope} 找不到所在层，跳过。", stage="WARN")
             return
 
-        original = node.dialog_trigger
+        original = self._orig_trigger.get(node.name, node.dialog_trigger)
         best_trigger, best_rate = original, -1.0
         feedback = ""
         for attempt in range(self.config.optimize.max_reflection_retries + 1):
-            res = await self.llm.refine_trigger(node, samples, feedback)
-            new_trigger = res.get("dialog_trigger", node.dialog_trigger) or node.dialog_trigger
-            node.dialog_trigger = new_trigger  # 试应用（影响同层导航）
+            async with self._sem:
+                res = await self.llm.refine_trigger(node, samples, feedback)
+            new_trigger = res.get("dialog_trigger") or original
 
-            # 验证：batch 内每条对话在父层重导航，应选中本节点
-            misroute: List[Dict] = []
-            for s in samples:
-                chosen = await self.llm.navigate(s["chat_content"], parent.children)
-                if chosen != node.name:
-                    misroute.append({"call_sno": s["call_sno"],
-                                     "chat_content": s["chat_content"],
-                                     "chosen": chosen or "（未选中任何节点）"})
+            # 验证：用快照同层兄弟构造候选（本节点用 new_trigger，其余用原始 trigger），
+            # batch 内每条对话重导航应选中本节点。并行，受共享 semaphore 限流。
+            candidates = self._snapshot_siblings(sibling_names, node.name, new_trigger)
+
+            async def _check(s: Dict) -> Optional[Dict]:
+                async with self._sem:
+                    chosen = await self.llm.navigate(s["chat_content"], candidates)
+                if chosen == node.name:
+                    return None
+                return {"call_sno": s["call_sno"], "chat_content": s["chat_content"],
+                        "chosen": chosen or "（未选中任何节点）"}
+
+            checked = await asyncio.gather(*[_check(s) for s in samples])
+            misroute = [m for m in checked if m is not None]
             rate = (len(samples) - len(misroute)) / len(samples)
             self._dump(f"{_safe(node.name)}_trigger_try{attempt+1}",
                        {"dialog_trigger": new_trigger, "reason": res.get("reason", ""),
@@ -328,10 +354,9 @@ class DialogOptimizer:
             if rate > best_rate:
                 best_trigger, best_rate = new_trigger, rate
             if not misroute:
+                node.dialog_trigger = new_trigger
                 log(f"{scope} 全部正确分类，接受。", stage="OPTIMIZE")
                 return
-
-            node.dialog_trigger = original  # 回滚后带反馈重试
             feedback = _trigger_feedback(new_trigger, misroute, node.name)
             log(f"{scope} 仍有 {len(misroute)} 条未分类正确，重试。", stage="OPTIMIZE")
 
@@ -339,30 +364,34 @@ class DialogOptimizer:
         log(f"{scope} 达到最大重试，采用历史最优版本（命中率 {best_rate:.3f}）。", stage="WARN")
 
     # =======================================================================
-    # background batch：修改节点 background -> 重建路径背景生成 query 验证检索
+    # background batch：改节点 background -> 用快照重建路径背景生成 query 验证检索
     # =======================================================================
     async def _refine_background_batch(self, node: Node, samples: List[Dict]) -> None:
         scope = f"node[{node.name}].background"
-        stage_banner(f"优化 {scope}：{len(samples)} 个失败样本")
+        log(f"优化 {scope}：{len(samples)} 个失败样本", stage="OPTIMIZE")
 
-        original = node.background
+        original = self._orig_background.get(node.name, node.background)
         best_bg, best_rate = original, -1.0
         feedback = ""
         for attempt in range(self.config.optimize.max_reflection_retries + 1):
-            res = await self.llm.refine_background(node, samples, feedback)
-            new_bg = res.get("background", node.background) or node.background
-            node.background = new_bg  # 试应用
+            async with self._sem:
+                res = await self.llm.refine_background(node, samples, feedback)
+            new_bg = res.get("background") or original
 
-            # 验证：沿对话原路径重建背景（含改后的新 BG）-> 生成 query -> 检索是否命中 GT
-            still_fail: List[Dict] = []
-            for s in samples:
-                backgrounds = self._collect_path_backgrounds(s["path_names"])
-                query = await self.llm.generate_query(s["chat_content"], backgrounds)
-                ok = await self.retriever.retrieve(query, s["case_id"])
-                if not ok:
-                    still_fail.append({"call_sno": s["call_sno"], "query": query,
-                                       "gt_case_name": s["gt_case_name"],
-                                       "gt_case_text": s["gt_case_text"]})
+            # 验证：沿对话原路径重建背景（本节点用 new_bg，其余用原始 BG）-> 生成 query -> 检索。
+            # 并行，受共享 semaphore 限流。
+            async def _check(s: Dict) -> Optional[Dict]:
+                backgrounds = self._snapshot_path_backgrounds(s["path_names"], node.name, new_bg)
+                async with self._sem:
+                    query = await self.llm.generate_query(s["chat_content"], backgrounds)
+                    ok = await self.retriever.retrieve(query, s["case_id"])
+                if ok:
+                    return None
+                return {"call_sno": s["call_sno"], "query": query,
+                        "gt_case_name": s["gt_case_name"], "gt_case_text": s["gt_case_text"]}
+
+            checked = await asyncio.gather(*[_check(s) for s in samples])
+            still_fail = [m for m in checked if m is not None]
             rate = (len(samples) - len(still_fail)) / len(samples)
             self._dump(f"{_safe(node.name)}_background_try{attempt+1}",
                        {"background": new_bg, "reason": res.get("reason", ""),
@@ -373,23 +402,35 @@ class DialogOptimizer:
             if rate > best_rate:
                 best_bg, best_rate = new_bg, rate
             if not still_fail:
+                node.background = new_bg
                 log(f"{scope} 全部成功检索，接受。", stage="OPTIMIZE")
                 return
-
-            node.background = original  # 回滚后带反馈重试
             feedback = _background_feedback(new_bg, still_fail)
             log(f"{scope} 仍有 {len(still_fail)} 条未检索到，重试。", stage="OPTIMIZE")
 
         node.background = best_bg
         log(f"{scope} 达到最大重试，采用历史最优版本（召回率 {best_rate:.3f}）。", stage="WARN")
 
-    def _collect_path_backgrounds(self, path_names: List[str]) -> List[str]:
-        """按路径节点名，从当前树取各节点 background（自动反映已修改的新 BG）。"""
+    def _snapshot_siblings(
+        self, sibling_names: List[str], target: str, target_trigger: str
+    ) -> List[Node]:
+        """用优化前快照构造同层候选节点：目标节点用 target_trigger，其余用原始 trigger。"""
+        out: List[Node] = []
+        for name in sibling_names:
+            trig = target_trigger if name == target else self._orig_trigger.get(name, "")
+            out.append(Node(name=name, dialog_trigger=trig,
+                            background=self._orig_background.get(name, "")))
+        return out
+
+    def _snapshot_path_backgrounds(
+        self, path_names: List[str], target: str, target_bg: str
+    ) -> List[str]:
+        """用优化前快照重建路径背景：目标节点用 target_bg，其余用原始 background。"""
         backgrounds: List[str] = []
         for name in path_names:
-            n = self._find_node(name)
-            if n is not None and n.background:
-                backgrounds.append(n.background)
+            bg = target_bg if name == target else self._orig_background.get(name, "")
+            if bg:
+                backgrounds.append(bg)
         return backgrounds
 
     # =======================================================================
@@ -440,19 +481,6 @@ class DialogOptimizer:
             if n.name == name:
                 found.append(n)
             for c in n.children:
-                walk(c)
-
-        walk(self.tree.root)
-        return found[0] if found else None
-
-    def _find_parent(self, name: str) -> Optional[Node]:
-        """返回 name 节点的父节点（root 的子节点的父节点即 root）。"""
-        found: List[Node] = []
-
-        def walk(n: Node) -> None:
-            for c in n.children:
-                if c.name == name:
-                    found.append(n)
                 walk(c)
 
         walk(self.tree.root)

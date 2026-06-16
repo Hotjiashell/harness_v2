@@ -118,7 +118,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 对话导航(只看对话，逐层选类别) → 收集背景 → 生成 query → 调用 retrieve 检索 (并行)
   → 失败则错误归因（判定 background 不足 还是 某候选 trigger 不当）
   → 按 (节点, 操作类型) 分 batch
-  → 先改所有 trigger batch（修导航），再改所有 background batch（优化 query）
+  → 所有 batch 并行修改+验证（验证基于优化前快照，互不干扰）
   → 每个 batch 局部验证 → 全对则接受 / 否则带反馈重试 / 达上限取历史最优版本
 ```
 
@@ -134,11 +134,15 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 
 > 归因不再依赖阶段一落点推出的「GT 导航路径」（其可靠性不足），改为给模型「实际轨迹 + 各层候选 + 目标案例」，让其自行判断在哪一步、因何失败。
 
-**Batch 修改与验证**：归因结果按 `(节点, 操作类型)` 分组——每个节点最多一个 trigger batch 与一个 background batch。**先处理所有 trigger batch，再处理所有 background batch**（background 验证需先导航到该节点，故依赖 trigger 已修好）。
+**Batch 修改与验证**：归因结果按 `(节点, 操作类型)` 分组——每个节点最多一个 trigger batch 与一个 background batch。**所有 batch（trigger / background）完全并行**处理，互不依赖。
 
-- **trigger batch**：让模型据该 batch 的失败对话改写节点 `dialog_trigger`，然后在**该节点所在层**（父节点的子节点中）对 batch 内每条对话重新导航，验证是否都能选中本节点；反馈会列出仍被分到别处的对话。
-- **background batch**：让模型改写节点 `background`，然后沿对话原路径重建各节点背景（含改后的新 BG）→ 重新生成 query → 检索，验证是否都能命中目标案例；反馈会列出 query 仍检索不到目标案例的对话。
+并行的前提是**所有验证都基于「优化前快照」**：进入阶段二时先记录每个节点的原始 `dialog_trigger`、`background` 以及各节点所在层的兄弟节点。每个 batch 在验证时，只把目标节点的对应字段换成本次的新值，其余节点一律读快照原始值——因此 batch A 的临时改动不会污染 batch B 的验证，结果与串行一致。验证期间不改动真实树，仅在该 batch 最终接受/取最优时才把结果写回目标节点。
+
+- **trigger batch**：让模型据该 batch 的失败对话改写节点 `dialog_trigger`，然后用**快照中该节点所在层的兄弟**构造候选（目标节点用新 trigger，其余用原始 trigger），对 batch 内每条对话重新导航，验证是否都能选中本节点；反馈会列出仍被分到别处的对话。
+- **background batch**：让模型改写节点 `background`，然后沿对话原路径用快照重建各节点背景（目标节点用新 BG，其余用原始 BG）→ 重新生成 query → 检索，验证是否都能命中目标案例；反馈会列出 query 仍检索不到目标案例的对话。
 - **接受/兜底**：batch 内全部通过即接受；否则带反馈重试，达 `OPTIMIZE.max_reflection_retries` 上限后采用历史上成功率最高的版本。
+
+> 并发控制：所有并行 batch 及 batch 内每条对话的验证，共用一个全局 `asyncio.Semaphore`，真正在途的 LLM/检索调用数始终不超过 `LLM.concurrency`。
 
 > 不再划分训练/验证集，也不再用全量召回率作逐节点的硬约束（全量召回率仅在开头/结尾各算一次作整体观测）。验证改为针对每个 batch 的局部目标，反馈也据此具体生成。
 
