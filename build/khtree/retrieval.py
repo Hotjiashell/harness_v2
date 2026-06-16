@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """检索适配器。
 
-按需求，retrieve.py 当前不实现，这里只预留调用方式：优先调用根目录
-retrieve.py::retrive(query, caseID) -> bool。
+优先调用根目录 retrieve.py::retrieve(query, caseID) -> bool。
 
 当其未实现（返回 None / 抛错）时，回退到一个本地的、确定性的“伪检索”，
 依据 query 与目标案例文本的关键词重叠判定召回成功与否，使阶段二的
@@ -32,7 +31,7 @@ def _load_root_retrieve():
         mod = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        return getattr(mod, "retrive", None) or getattr(mod, "retrieve", None)
+        return getattr(mod, "retrieve", None)
     except Exception as exc:  # noqa: BLE001
         log(f"加载根目录 retrieve.py 失败，使用本地回退检索: {exc}", stage="RETRIEVE")
         return None

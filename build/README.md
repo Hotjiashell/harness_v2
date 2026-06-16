@@ -122,7 +122,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
   → 用训练/验证对话验证召回率是否提高 → 接受 / 反馈重试
 ```
 
-检索调用根目录 `retrieve.py::retrive`（当前为未实现的桩，框架已预留调用方式）。
+检索调用根目录 `retrieve.py::retrieve(query, caseID) -> bool`（内部由 `retrieve_case` 实现；`retrieve_case` 当前为未实现的桩）。
 
 ## 配置说明（`config.py`）
 
