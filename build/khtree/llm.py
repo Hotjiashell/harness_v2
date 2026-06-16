@@ -274,30 +274,63 @@ class LLMClient:
         data = extract_json(await self._chat(msgs))
         return str(data.get("query", chat_content[:60]))
 
-    async def attribute_error(
-        self, chat_content: str, visited: List[Dict], query: str,
-        gt_case_name: str = "", gt_case_text: str = "", gt_path: List[Dict] = None,
+    async def attribute_error_oneshot(
+        self, chat_content: str, path_nodes: List[Dict], levels: List[Dict],
+        query: str, gt_case_name: str = "", gt_case_text: str = "",
     ) -> Dict:
         if self.provider == "mock":
-            return self._mock_attribute_error(chat_content, visited)
-        msgs = prompts.attribute_error_messages(
-            chat_content, visited, query, gt_case_name, gt_case_text, gt_path or []
+            return self._mock_attribute_oneshot(path_nodes, levels)
+        msgs = prompts.attribute_oneshot_messages(
+            chat_content, path_nodes, levels, query, gt_case_name, gt_case_text
         )
         data = extract_json(await self._chat(msgs))
         return data if isinstance(data, dict) else {}
 
-    def _mock_attribute_error(self, chat_content: str, visited: List[Dict]) -> Dict:
-        # 若导航没走到底（visited 短），归因为最后一个节点的 trigger 问题；
-        # 否则归因为最后一个节点的 background 问题。
-        if not visited:
-            return {"node_name": "Root", "problem": "trigger", "reason": "未能进入任何类别"}
-        last = visited[-1]
-        problem = "trigger" if last.get("dead_end") else "background"
-        return {
-            "node_name": last.get("name", ""),
-            "problem": problem,
-            "reason": "mock 归因：导航中断" if problem == "trigger" else "mock 归因：背景知识不足",
-        }
+    async def attribute_error_stage(
+        self, chat_content: str, path_nodes: List[Dict], level: Dict,
+        query: str, gt_case_name: str = "", gt_case_text: str = "",
+        allow_background: bool = True, allow_escalate: bool = True,
+        stage_depth: int = 1,
+    ) -> Dict:
+        if self.provider == "mock":
+            return self._mock_attribute_stage(path_nodes, level, allow_background, allow_escalate)
+        msgs = prompts.attribute_stage_messages(
+            chat_content, path_nodes, level, query, gt_case_name, gt_case_text,
+            allow_background, allow_escalate, stage_depth,
+        )
+        data = extract_json(await self._chat(msgs))
+        return data if isinstance(data, dict) else {}
+
+    def _mock_attribute_oneshot(self, path_nodes: List[Dict], levels: List[Dict]) -> Dict:
+        # 若导航中途断掉（最后一层没选中），归因为该层首个候选的 trigger；
+        # 否则归因为路径最后一个节点的 background。
+        if levels and levels[-1].get("chosen_name") is None:
+            cands = levels[-1].get("candidates", [])
+            name = cands[0]["name"] if cands else "Root"
+            return {"node_name": name, "problem": "trigger",
+                    "reason": "mock 一次性归因：导航中断，候选 trigger 不当"}
+        if path_nodes:
+            return {"node_name": path_nodes[-1]["name"], "problem": "background",
+                    "reason": "mock 一次性归因：路径走对，背景知识不足"}
+        return {"node_name": "Root", "problem": "trigger", "reason": "mock 一次性归因"}
+
+    def _mock_attribute_stage(
+        self, path_nodes: List[Dict], level: Dict,
+        allow_background: bool, allow_escalate: bool,
+    ) -> Dict:
+        # 最低层：选中则判 background（若允许），未选中判 trigger；
+        # 非最低层：默认 trigger（不再无限上抛）。
+        chosen = level.get("chosen_name")
+        cands = level.get("candidates", [])
+        if chosen is None:
+            name = cands[0]["name"] if cands else "Root"
+            return {"node_name": name, "problem": "trigger",
+                    "reason": "mock 多阶段归因：本层未选中，候选 trigger 不当"}
+        if allow_background and path_nodes:
+            return {"node_name": path_nodes[-1]["name"], "problem": "background",
+                    "reason": "mock 多阶段归因：路径走对，背景知识不足"}
+        return {"node_name": chosen, "problem": "trigger",
+                "reason": "mock 多阶段归因：本层 trigger 不当"}
 
     async def reflect_errors(
         self, node: Node, error_samples: List[Dict], feedback: str = ""

@@ -80,6 +80,7 @@ BUILD = BuildSettings(
 OPTIMIZE = OptimizeSettings(
     max_reflection_retries=3,
     nav_beam_width=1,
+    attribution_mode="oneshot",   # 错误归因方式："oneshot" 或 "multistage"
 )
 
 

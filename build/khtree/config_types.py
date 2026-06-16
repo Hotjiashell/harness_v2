@@ -65,6 +65,8 @@ class BuildSettings:
 class OptimizeSettings:
     max_reflection_retries: int = 3
     nav_beam_width: int = 1
+    # 错误归因方式："oneshot"（一次性归因）或 "multistage"（多阶段逐层向上归因）
+    attribution_mode: str = "oneshot"
 
 
 @dataclass
@@ -84,7 +86,6 @@ class RuntimeSettings:
 class HarnessConfig:
     paths: PathSettings
     llm: LLMSettings = field(default_factory=LLMSettings)
-    build: BuildSettings = field(default_factory=BuildSettings)
     build: BuildSettings = field(default_factory=BuildSettings)
     optimize: OptimizeSettings = field(default_factory=OptimizeSettings)
     runtime: RuntimeSettings = field(default_factory=RuntimeSettings)

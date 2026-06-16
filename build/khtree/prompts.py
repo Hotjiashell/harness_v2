@@ -191,43 +191,117 @@ def generate_query_messages(chat_content: str, backgrounds: List[str]) -> List[D
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def attribute_error_messages(
-    chat_content: str, visited: List[Dict], query: str,
-    gt_case_name: str = "", gt_case_text: str = "", gt_path: List[Dict] = None,
+def _path_block(path_nodes: List[Dict]) -> str:
+    """实际导航路径（含每个节点的 background），供 background 归因参考。"""
+    if not path_nodes:
+        return "（未进入任何类别）"
+    lines = []
+    for i, n in enumerate(path_nodes, 1):
+        lines.append(
+            f"  {i}. {n.get('name','')}\n"
+            f"     dialog_trigger：{n.get('dialog_trigger','')}\n"
+            f"     background：{n.get('background','')}"
+        )
+    return "\n".join(lines)
+
+
+def _level_block(level: Dict) -> str:
+    """单层候选节点（可能被选的全部节点）及实际选中者。"""
+    cands = level.get("candidates", [])
+    chosen = level.get("chosen_name")
+    lines = [f"  实际选中：{chosen if chosen else '（未选中任何节点）'}"]
+    for c in cands:
+        mark = " ← 实际选中" if c.get("name") == chosen else ""
+        lines.append(f"  - {c.get('name','')}：{c.get('dialog_trigger','')}{mark}")
+    return "\n".join(lines)
+
+
+_ATTR_PROBLEM_DOC = (
+    "  - background：路径上某个【已走过节点】的 background 知识不足，"
+    "导致据此生成的检索 query 与目标案例对不上（路径走对了但 query 不好）。"
+    "background 的作用是提供额外知识，指导生成更容易检索到目标案例的 query；\n"
+    "  - trigger：某个【候选节点】的 dialog_trigger 有问题，导致没能选到通往目标案例的正确节点。"
+    "dialog_trigger 的作用是说明什么样的对话应进入该类别。\n"
+)
+
+
+def attribute_oneshot_messages(
+    chat_content: str, path_nodes: List[Dict], levels: List[Dict],
+    query: str, gt_case_name: str = "", gt_case_text: str = "",
 ) -> List[Dict[str, str]]:
+    """一次性归因：把所有层候选一并给模型，让其一次判断 background / trigger 问题。"""
     system = (
-        "你是错误归因专家。一次对话导航+检索失败了：根据对话选择类别、生成检索 query，"
-        "但该 query 没能检索到这条对话本应命中的目标案例（GT 案例）。"
-        "请对照「实际导航路径」与「目标案例本应走的 GT 路径」（含每个节点的 dialog_trigger）、"
-        "以及目标案例内容，分析是哪个节点出了问题，以及问题类型：\n"
-        "  - trigger：实际路径偏离了 GT 路径，说明某节点的 dialog_trigger 有问题，"
-        "导致没走到目标案例所属的正确类别。dialog_trigger的作用是说明什么时候该选择该类别；\n"
-        "  - background：实际路径与 GT 路径一致（类别走对了），但节点 background 不足，"
-        "生成的 query 与目标案例对不上。background的作用是提供额外知识，指导生成更容易检索到目标案例的query。\n"
-        "trigger 问题通常定位到路径首次偏离处的节点——对比该处实际选中节点与 GT 节点的 "
-        "dialog_trigger，判断为何选错。\n\n"
-        "请先逐步分析（实际路径在哪偏离 GT 路径 / 或路径一致但 query 哪里对不上目标案例），"
-        "然后在最后用一个 ```json``` 代码块输出归因结论。"
+        "你是错误归因专家。一次对话导航+检索失败了：模型依据对话逐层选择类别、"
+        "再结合路径上各节点的 background 生成检索 query，但该 query 没能检索到"
+        "这条对话本应命中的目标案例（GT 案例）。\n"
+        "请结合目标案例内容，判断失败的根因属于以下哪一种：\n"
+        + _ATTR_PROBLEM_DOC +
+        "\n下面会给出：实际走过的路径（含各节点 background）、以及每一层"
+        "「可能被选的」全部候选节点及其 dialog_trigger。请先逐步分析"
+        "（query 为何检索不到目标案例：是某节点 background 不足，还是某层选错了类别、"
+        "即某候选 trigger 不当），然后在最后用一个 ```json``` 代码块输出归因结论。"
     )
-    gt_path = gt_path or []
-    gt_path_str = (
-        " → ".join(p.get("name", "") for p in gt_path) if gt_path
-        else "（无，未知该案例的正确路径）"
-    )
-    actual_path_str = " → ".join(v.get("name", "") for v in visited) or "（未进入任何类别）"
+    level_blocks = []
+    for i, lv in enumerate(levels, 1):
+        level_blocks.append(f"第 {i} 层候选：\n{_level_block(lv)}")
     user = (
         f"对话内容：\n{chat_content}\n\n"
-        f"实际导航路径：{actual_path_str}\n"
-        f"目标案例本应走的 GT 路径：{gt_path_str}\n\n"
-        f"GT 路径详情（每个节点的 name 与 dialog_trigger）：\n"
-        f"{json.dumps(gt_path, ensure_ascii=False, indent=2)}\n\n"
-        f"实际导航路径详情（依次经过的节点及其 trigger/background）：\n"
-        f"{json.dumps(visited, ensure_ascii=False, indent=2)}\n\n"
+        f"实际导航路径（含 background）：\n{_path_block(path_nodes)}\n\n"
+        f"各层「可能被选的」候选节点：\n" + "\n\n".join(level_blocks) + "\n\n"
         f"生成的检索 query（未能检索到目标案例）：{query}\n\n"
         f"本应检索到的目标案例（GT）：\n标题：{gt_case_name}\n内容：{gt_case_text}\n\n"
         "请先给出分析，最后用 ```json``` 代码块输出："
         '{"node_name":"<问题节点name>","problem":"trigger或background","reason":"..."}。'
-        "在reason说明应该对这个节点做怎样的修改，以及为什么这样修改。"
+        "node_name 必须是上面出现过的某个节点名；"
+        "reason 说明应对该节点做怎样的修改，以及为什么这样修改。"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def attribute_stage_messages(
+    chat_content: str, path_nodes: List[Dict], level: Dict,
+    query: str, gt_case_name: str = "", gt_case_text: str = "",
+    allow_background: bool = True, allow_escalate: bool = True,
+    stage_depth: int = 1,
+) -> List[Dict[str, str]]:
+    """多阶段归因的单阶段：只给【本层】候选，让模型判断本层问题或上抛。"""
+    options = []
+    if allow_background:
+        options.append(
+            "  - background：路径上某个【已走过节点】的 background 知识不足，"
+            "导致据此生成的检索 query 与目标案例对不上（本层及以上类别都选对了，只是 query 不好）。"
+        )
+    options.append(
+        "  - trigger：本层某个【候选节点】的 dialog_trigger 有问题，"
+        "导致没能选到通往目标案例的正确节点。"
+    )
+    if allow_escalate:
+        options.append(
+            "  - upper_level：本层的候选里压根没有通往目标案例的正确类别，"
+            "说明问题在更上一层（上一层就选错了），需要向上追溯。"
+        )
+    system = (
+        "你是错误归因专家。一次对话导航+检索失败了：模型依据对话逐层选择类别、"
+        "再结合路径各节点 background 生成检索 query，但该 query 没能检索到目标案例（GT 案例）。\n"
+        f"当前正在分析第 {stage_depth} 层（从根往下数）的候选。"
+        "请结合目标案例内容，判断本层失败根因属于以下哪一种：\n"
+        + "\n".join(options) + "\n\n"
+        "请先逐步分析，然后在最后用一个 ```json``` 代码块输出结论。"
+    )
+    problem_enum = "/".join(
+        (["background"] if allow_background else []) + ["trigger"]
+        + (["upper_level"] if allow_escalate else [])
+    )
+    user = (
+        f"对话内容：\n{chat_content}\n\n"
+        f"实际导航路径（含 background）：\n{_path_block(path_nodes)}\n\n"
+        f"本层「可能被选的」候选节点：\n{_level_block(level)}\n\n"
+        f"生成的检索 query（未能检索到目标案例）：{query}\n\n"
+        f"本应检索到的目标案例（GT）：\n标题：{gt_case_name}\n内容：{gt_case_text}\n\n"
+        "请先给出分析，最后用 ```json``` 代码块输出："
+        f'{{"node_name":"<问题节点name，problem=upper_level 时可留空>",'
+        f'"problem":"{problem_enum}","reason":"..."}}。'
+        "reason 说明判断依据；若为 trigger/background，说明应对该节点做怎样的修改。"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 

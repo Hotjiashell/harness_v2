@@ -33,6 +33,10 @@ class NavResult:
     def __init__(self, dialog: Dialog):
         self.dialog = dialog
         self.visited: List[Dict] = []   # 经过的节点 [{name, dialog_trigger, background, dead_end}]
+        # 每个导航决策层的候选信息：
+        #   [{candidates: [{name, dialog_trigger}], chosen_name: str|None}]
+        # candidates 是该层「可能被选的」全部节点（即当前节点的所有子节点）。
+        self.levels: List[Dict] = []
         self.query: str = ""
         self.success: bool = False
         self.attribution: Optional[Dict] = None  # {node_name, problem, reason}
@@ -58,23 +62,6 @@ class DialogOptimizer:
         self.recorder = recorder
         self.retriever = Retriever(cases)
         self._step = 0
-        # case_id -> GT 导航路径（根之下到案例所属节点，每个节点含 name + dialog_trigger）。
-        # 阶段一已把每个案例落到某节点，这条路径即该案例"本应走"的导航路径。
-        self._gt_path: Dict[str, List[Dict]] = self._build_gt_paths()
-
-    def _build_gt_paths(self) -> Dict[str, List[Dict]]:
-        paths: Dict[str, List[Dict]] = {}
-
-        def walk(node: Node, prefix: List[Dict]) -> None:
-            here = prefix + [{"name": node.name, "dialog_trigger": node.dialog_trigger}]
-            for cid in node.case_ids:
-                # 直接落在该节点的案例，路径到此为止
-                paths[cid] = here[1:]  # 去掉 Root
-            for child in node.children:
-                walk(child, here)
-
-        walk(self.tree.root, [])
-        return paths
 
     def _dump(self, tag: str, data) -> None:
         self._step += 1
@@ -133,11 +120,16 @@ class DialogOptimizer:
     ) -> List[Optional[NavResult]]:
         async def _one(d: Dialog) -> NavResult:
             res = NavResult(d)
-            # 1. 导航
+            # 1. 导航（同时记录每层候选）
             backgrounds: List[str] = []
             node = self.tree.root
             while node.children:
+                candidates = [
+                    {"name": c.name, "dialog_trigger": c.dialog_trigger}
+                    for c in node.children
+                ]
                 chosen = await self.llm.navigate(d.chat_content, node.children)
+                res.levels.append({"candidates": candidates, "chosen_name": chosen or None})
                 if not chosen:
                     if res.visited:
                         res.visited[-1]["dead_end"] = True
@@ -164,13 +156,7 @@ class DialogOptimizer:
 
             # 3. 失败则归因
             if not res.success:
-                gt = self.cases.get(d.case_id)
-                res.attribution = await self.llm.attribute_error(
-                    d.chat_content, res.visited, res.query,
-                    gt_case_name=gt.case_name if gt else "",
-                    gt_case_text=gt.text if gt else "",
-                    gt_path=self._gt_path.get(d.case_id, []),
-                )
+                res.attribution = await self._attribute(res)
             return res
 
         results = await gather_limited(
@@ -189,10 +175,88 @@ class DialogOptimizer:
                 "query": r.query,
                 "success": r.success,
                 "visited": [v["name"] for v in r.visited],
+                "levels": r.levels,
                 "attribution": r.attribution,
             } for r in results if r is not None],
         )
         return results
+
+    # =======================================================================
+    # 错误归因（oneshot / multistage）
+    # =======================================================================
+    async def _attribute(self, res: NavResult) -> Dict:
+        """对一条失败样本做错误归因，返回 {node_name, problem, reason}。
+
+        problem 取值：
+          - "background"：路径上某节点的 background 不足，导致 query 不好；
+          - "trigger"：某候选节点的 dialog_trigger 有问题，导致没导到正确节点。
+        """
+        gt = self.cases.get(res.dialog.case_id)
+        gt_name = gt.case_name if gt else ""
+        gt_text = gt.text if gt else ""
+        # 路径上实际走过的节点（含 background），供 background 归因用
+        path_nodes = [
+            {"name": v["name"], "dialog_trigger": v.get("dialog_trigger", ""),
+             "background": v.get("background", "")}
+            for v in res.visited
+        ]
+
+        if self.config.optimize.attribution_mode == "multistage":
+            return await self._attribute_multistage(
+                res, path_nodes, gt_name, gt_text
+            )
+        return await self._attribute_oneshot(res, path_nodes, gt_name, gt_text)
+
+    async def _attribute_oneshot(
+        self, res: NavResult, path_nodes: List[Dict], gt_name: str, gt_text: str
+    ) -> Dict:
+        """一次性归因：把所有层的候选一并交给模型判断。"""
+        return await self.llm.attribute_error_oneshot(
+            chat_content=res.dialog.chat_content,
+            path_nodes=path_nodes,
+            levels=res.levels,
+            query=res.query,
+            gt_case_name=gt_name,
+            gt_case_text=gt_text,
+        )
+
+    async def _attribute_multistage(
+        self, res: NavResult, path_nodes: List[Dict], gt_name: str, gt_text: str
+    ) -> Dict:
+        """多阶段归因：从最低层开始，逐层向上判断。
+
+        每一阶段模型可判定：
+          - background：路径某节点背景不足（仅最低层允许，因为 query 由整条路径生成）；
+          - trigger：本层某候选节点 trigger 有问题；
+          - upper_level：本层之上的分类就错了 -> 进入上一层继续（root 层不可再上）。
+        """
+        levels = res.levels
+        if not levels:
+            return {"node_name": res.visited[-1]["name"] if res.visited else "Root",
+                    "problem": "trigger", "reason": "无候选层信息"}
+
+        for idx in range(len(levels) - 1, -1, -1):
+            is_deepest = (idx == len(levels) - 1)
+            can_escalate = (idx > 0)  # 还能再往上（idx==0 是 root 的下一层，不能再上）
+            attr = await self.llm.attribute_error_stage(
+                chat_content=res.dialog.chat_content,
+                path_nodes=path_nodes,
+                level=levels[idx],
+                query=res.query,
+                gt_case_name=gt_name,
+                gt_case_text=gt_text,
+                allow_background=is_deepest,
+                allow_escalate=can_escalate,
+                stage_depth=idx + 1,
+            )
+            problem = attr.get("problem", "")
+            if problem == "upper_level" and can_escalate:
+                continue  # 进入上一层
+            return attr
+        # 兜底：到 root 层仍判 upper_level，归到该层首个候选的 trigger
+        first = levels[0]["candidates"][0]["name"] if levels[0]["candidates"] else "Root"
+        return {"node_name": first, "problem": "trigger",
+                "reason": "多阶段归因到达顶层，归因为首层候选 trigger"}
 
     def _group_by_node(self, failures: List[NavResult]) -> Dict[str, List[Dict]]:
         batches: Dict[str, List[Dict]] = {}
