@@ -115,12 +115,24 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 不新增/删除节点，只优化已有节点的 `dialog_trigger` 或 `background`：
 
 ```
-对话导航(只看对话) → 收集背景 → 生成 query → 调用 retrieve 检索 (并行)
-  → 失败则错误归因（哪个节点的 trigger / background 出问题）
+对话导航(只看对话，逐层选类别) → 收集背景 → 生成 query → 调用 retrieve 检索 (并行)
+  → 失败则错误归因（判定 background 不足 还是 某候选 trigger 不当）
   → 按节点聚合错误样本成 Batch
-  → 对每个 Batch 反思 → 修改 dialog_trigger / background
+  → 对每个 Batch 反思（带 GT 案例）→ 修改 dialog_trigger / background
   → 用训练/验证对话验证召回率是否提高 → 接受 / 反馈重试
 ```
+
+**错误归因**：导航时记录每一层「可能被选的」全部候选节点（同层节点的 name + dialog_trigger）与实际选中者；检索失败后，结合实际轨迹（含各节点 background）、对话、query、目标案例（GT）的标题与内容做归因。问题分两类：
+
+- **background**：路径上某个已走过节点的 `background` 知识不足，query 与目标案例对不上（路径走对了，query 不好）；
+- **trigger**：某个候选节点的 `dialog_trigger` 有问题，导致没选到通往目标案例的正确节点。
+
+归因方式由 `OPTIMIZE.attribution_mode` 切换：
+
+- **oneshot（一次性归因）**：把所有层的候选一并交给模型，一次判定是哪个节点的 background 还是哪个候选的 trigger 出问题。
+- **multistage（多阶段归因）**：从最低层开始，每阶段只给本层候选，模型判定 `background`（仅最低层可选，因 query 由整条路径生成）/ `trigger` / `upper_level`。判 `upper_level` 表示本层候选里没有正确类别、问题在更上一层，则进入上一层继续；直到 root 的下一层为止（无法再上抛，选项自动收窄为仅 trigger）。
+
+> 归因不再依赖阶段一落点推出的「GT 导航路径」（其可靠性不足），改为给模型「实际轨迹 + 各层候选 + 目标案例」，让其自行判断在哪一步、因何失败。
 
 检索调用根目录 `retrieve.py::retrieve(query, caseID) -> bool`（内部由 `retrieve_case` 实现；`retrieve_case` 当前为未实现的桩）。
 
@@ -146,6 +158,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 | 复杂度检查重试次数 | `BUILD.max_complexity_retries` | |
 | 不再分裂阈值 | `BUILD.min_cases_to_split` | 类别下案例数低于此值不向下分层 |
 | 优化反思重试次数 | `OPTIMIZE.max_reflection_retries` | |
+| 错误归因方式 | `OPTIMIZE.attribution_mode` | `oneshot`（一次性归因）/ `multistage`（多阶段逐层向上归因） |
 
 ## 关于 provider
 
