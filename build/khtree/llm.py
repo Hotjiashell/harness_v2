@@ -275,11 +275,14 @@ class LLMClient:
         return str(data.get("query", chat_content[:60]))
 
     async def attribute_error(
-        self, chat_content: str, visited: List[Dict], query: str
+        self, chat_content: str, visited: List[Dict], query: str,
+        gt_case_name: str = "", gt_case_text: str = "", gt_path: List[Dict] = None,
     ) -> Dict:
         if self.provider == "mock":
             return self._mock_attribute_error(chat_content, visited)
-        msgs = prompts.attribute_error_messages(chat_content, visited, query)
+        msgs = prompts.attribute_error_messages(
+            chat_content, visited, query, gt_case_name, gt_case_text, gt_path or []
+        )
         data = extract_json(await self._chat(msgs))
         return data if isinstance(data, dict) else {}
 

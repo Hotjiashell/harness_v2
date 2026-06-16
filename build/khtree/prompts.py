@@ -192,21 +192,42 @@ def generate_query_messages(chat_content: str, backgrounds: List[str]) -> List[D
 
 
 def attribute_error_messages(
-    chat_content: str, visited: List[Dict], query: str
+    chat_content: str, visited: List[Dict], query: str,
+    gt_case_name: str = "", gt_case_text: str = "", gt_path: List[Dict] = None,
 ) -> List[Dict[str, str]]:
     system = (
-        "你是错误归因专家。一次对话导航+检索失败了。请分析是哪个节点出了问题，"
-        "以及问题类型：\n"
-        "  - trigger：节点的 dialog_trigger 有问题，导致选不对正确类别；\n"
-        "  - background：节点的 background 提供的知识/经验不足，导致生成的 query 不好。\n"
-        "请指出最该负责的那个节点。"
+        "你是错误归因专家。一次对话导航+检索失败了：根据对话选择类别、生成检索 query，"
+        "但该 query 没能检索到这条对话本应命中的目标案例（GT 案例）。"
+        "请对照「实际导航路径」与「目标案例本应走的 GT 路径」（含每个节点的 dialog_trigger）、"
+        "以及目标案例内容，分析是哪个节点出了问题，以及问题类型：\n"
+        "  - trigger：实际路径偏离了 GT 路径，说明某节点的 dialog_trigger 有问题，"
+        "导致没走到目标案例所属的正确类别。dialog_trigger的作用是说明什么时候该选择该类别；\n"
+        "  - background：实际路径与 GT 路径一致（类别走对了），但节点 background 不足，"
+        "生成的 query 与目标案例对不上。background的作用是提供额外知识，指导生成更容易检索到目标案例的query。\n"
+        "trigger 问题通常定位到路径首次偏离处的节点——对比该处实际选中节点与 GT 节点的 "
+        "dialog_trigger，判断为何选错。\n\n"
+        "请先逐步分析（实际路径在哪偏离 GT 路径 / 或路径一致但 query 哪里对不上目标案例），"
+        "然后在最后用一个 ```json``` 代码块输出归因结论。"
     )
+    gt_path = gt_path or []
+    gt_path_str = (
+        " → ".join(p.get("name", "") for p in gt_path) if gt_path
+        else "（无，未知该案例的正确路径）"
+    )
+    actual_path_str = " → ".join(v.get("name", "") for v in visited) or "（未进入任何类别）"
     user = (
         f"对话内容：\n{chat_content}\n\n"
-        f"导航路径（依次经过的节点及其 trigger/background）：\n"
+        f"实际导航路径：{actual_path_str}\n"
+        f"目标案例本应走的 GT 路径：{gt_path_str}\n\n"
+        f"GT 路径详情（每个节点的 name 与 dialog_trigger）：\n"
+        f"{json.dumps(gt_path, ensure_ascii=False, indent=2)}\n\n"
+        f"实际导航路径详情（依次经过的节点及其 trigger/background）：\n"
         f"{json.dumps(visited, ensure_ascii=False, indent=2)}\n\n"
-        f"生成的检索 query：{query}\n\n"
-        '请输出 JSON：{"node_name":"<问题节点name>","problem":"trigger或background","reason":"..."}'
+        f"生成的检索 query（未能检索到目标案例）：{query}\n\n"
+        f"本应检索到的目标案例（GT）：\n标题：{gt_case_name}\n内容：{gt_case_text}\n\n"
+        "请先给出分析，最后用 ```json``` 代码块输出："
+        '{"node_name":"<问题节点name>","problem":"trigger或background","reason":"..."}。'
+        "在reason说明应该对这个节点做怎样的修改，以及为什么这样修改。"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -216,17 +237,31 @@ def reflect_errors_messages(
 ) -> List[Dict[str, str]]:
     system = (
         "你是知识节点优化专家。下面是归因到同一个节点的一批失败样本。"
-        "请分析应如何改进该节点的 dialog_trigger 或 background（不新增/删除节点），"
-        "给出修改后的内容。dialog_trigger 决定对话能否走到该类别；"
-        "background 决定能否生成好的检索 query。"
+        "每个样本里：模型根据对话和节点 background 生成了一个检索 query，"
+        "但该 query 没能检索到这条对话本应命中的目标案例（GT 案例）。\n"
+        "请对照「生成的 query」与「目标案例的标题/内容」，分析 query 为何检索不到目标，"
+        "据此改进该节点的 dialog_trigger 或 background（不新增/删除节点）。\n"
+        "dialog_trigger 决定对话能否走到该类别；background 是生成检索 query 的依据，"
+        "background 写得贴近目标案例的用语与要点，才能让 query 检索到目标案例。"
     )
+    sample_lines = []
+    for i, s in enumerate(error_samples, 1):
+        sample_lines.append(
+            f"样本{i}：\n"
+            f"  归因问题类型：{s.get('problem', '')}\n"
+            f"  归因原因：{s.get('reason', '')}\n"
+            f"  对话内容：{s.get('chat_content', '')}\n"
+            f"  生成的检索 query（未能检索到目标案例）：{s.get('query', '')}\n"
+            f"  目标案例标题（GT）：{s.get('gt_case_name', '')}\n"
+            f"  目标案例内容（GT）：{s.get('gt_case_text', '')}"
+        )
     fb = f"\n\n上一轮反馈（修改未提升召回，请重新调整）：\n{feedback}" if feedback else ""
     user = (
         f"待优化节点：\nname：{node.name}\n"
         f"当前 dialog_trigger：{node.dialog_trigger}\n"
         f"当前 background：{node.background}\n\n"
-        f"失败样本（问题类型 + 对话）：\n"
-        f"{json.dumps(error_samples, ensure_ascii=False, indent=2)}{fb}\n\n"
+        f"失败样本（每个样本含：生成的 query + 它本应检索到的目标案例）：\n"
+        + "\n\n".join(sample_lines) + fb + "\n\n"
         '请输出 JSON：{"dialog_trigger":"<改进后，不变则原样返回>",'
         '"background":"<改进后，不变则原样返回>","reason":"..."}'
     )

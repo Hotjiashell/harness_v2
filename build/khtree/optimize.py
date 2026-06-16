@@ -58,6 +58,23 @@ class DialogOptimizer:
         self.recorder = recorder
         self.retriever = Retriever(cases)
         self._step = 0
+        # case_id -> GT 导航路径（根之下到案例所属节点，每个节点含 name + dialog_trigger）。
+        # 阶段一已把每个案例落到某节点，这条路径即该案例"本应走"的导航路径。
+        self._gt_path: Dict[str, List[Dict]] = self._build_gt_paths()
+
+    def _build_gt_paths(self) -> Dict[str, List[Dict]]:
+        paths: Dict[str, List[Dict]] = {}
+
+        def walk(node: Node, prefix: List[Dict]) -> None:
+            here = prefix + [{"name": node.name, "dialog_trigger": node.dialog_trigger}]
+            for cid in node.case_ids:
+                # 直接落在该节点的案例，路径到此为止
+                paths[cid] = here[1:]  # 去掉 Root
+            for child in node.children:
+                walk(child, here)
+
+        walk(self.tree.root, [])
+        return paths
 
     def _dump(self, tag: str, data) -> None:
         self._step += 1
@@ -147,8 +164,12 @@ class DialogOptimizer:
 
             # 3. 失败则归因
             if not res.success:
+                gt = self.cases.get(d.case_id)
                 res.attribution = await self.llm.attribute_error(
-                    d.chat_content, res.visited, res.query
+                    d.chat_content, res.visited, res.query,
+                    gt_case_name=gt.case_name if gt else "",
+                    gt_case_text=gt.text if gt else "",
+                    gt_path=self._gt_path.get(d.case_id, []),
                 )
             return res
 
@@ -181,12 +202,16 @@ class DialogOptimizer:
             if not node_name:
                 # 没有明确归因则归到最后访问节点
                 node_name = r.visited[-1]["name"] if r.visited else "Root"
+            gt = self.cases.get(r.dialog.case_id)
             batches.setdefault(node_name, []).append({
                 "problem": attr.get("problem", "trigger"),
                 "reason": attr.get("reason", ""),
                 "chat_content": r.dialog.chat_content,
                 "case_id": r.dialog.case_id,
                 "query": r.query,
+                # GT：该对话本应检索到的目标案例（当前 query 没检索到它）
+                "gt_case_name": gt.case_name if gt else "",
+                "gt_case_text": gt.text if gt else "",
                 "dialog": {"call_sno": r.dialog.call_sno},
             })
         return batches
