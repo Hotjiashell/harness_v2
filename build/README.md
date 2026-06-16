@@ -117,9 +117,9 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 ```
 对话导航(只看对话，逐层选类别) → 收集背景 → 生成 query → 调用 retrieve 检索 (并行)
   → 失败则错误归因（判定 background 不足 还是 某候选 trigger 不当）
-  → 按节点聚合错误样本成 Batch
-  → 对每个 Batch 反思（带 GT 案例）→ 修改 dialog_trigger / background
-  → 用训练/验证对话验证召回率是否提高 → 接受 / 反馈重试
+  → 按 (节点, 操作类型) 分 batch
+  → 先改所有 trigger batch（修导航），再改所有 background batch（优化 query）
+  → 每个 batch 局部验证 → 全对则接受 / 否则带反馈重试 / 达上限取历史最优版本
 ```
 
 **错误归因**：导航时记录每一层「可能被选的」全部候选节点（同层节点的 name + dialog_trigger）与实际选中者；检索失败后，结合实际轨迹（含各节点 background）、对话、query、目标案例（GT）的标题与内容做归因。问题分两类：
@@ -134,6 +134,14 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 
 > 归因不再依赖阶段一落点推出的「GT 导航路径」（其可靠性不足），改为给模型「实际轨迹 + 各层候选 + 目标案例」，让其自行判断在哪一步、因何失败。
 
+**Batch 修改与验证**：归因结果按 `(节点, 操作类型)` 分组——每个节点最多一个 trigger batch 与一个 background batch。**先处理所有 trigger batch，再处理所有 background batch**（background 验证需先导航到该节点，故依赖 trigger 已修好）。
+
+- **trigger batch**：让模型据该 batch 的失败对话改写节点 `dialog_trigger`，然后在**该节点所在层**（父节点的子节点中）对 batch 内每条对话重新导航，验证是否都能选中本节点；反馈会列出仍被分到别处的对话。
+- **background batch**：让模型改写节点 `background`，然后沿对话原路径重建各节点背景（含改后的新 BG）→ 重新生成 query → 检索，验证是否都能命中目标案例；反馈会列出 query 仍检索不到目标案例的对话。
+- **接受/兜底**：batch 内全部通过即接受；否则带反馈重试，达 `OPTIMIZE.max_reflection_retries` 上限后采用历史上成功率最高的版本。
+
+> 不再划分训练/验证集，也不再用全量召回率作逐节点的硬约束（全量召回率仅在开头/结尾各算一次作整体观测）。验证改为针对每个 batch 的局部目标，反馈也据此具体生成。
+
 检索调用根目录 `retrieve.py::retrieve(query, caseID) -> bool`（内部由 `retrieve_case` 实现；`retrieve_case` 当前为未实现的桩）。
 
 ## 配置说明（`config.py`）
@@ -144,7 +152,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 |------|------|------|
 | 运行阶段 | `RUNTIME.run_stage` | `build` 只构建 / `all` 构建后接着优化（不带子命令时生效） |
 | 案例库路径 | `PATHS.case_path` | |
-| 对话训练/验证集路径 | `PATHS.dialog_train_path` / `dialog_val_path` | |
+| 对话数据路径 | `PATHS.dialog_train_path` | 阶段二优化所用对话集（`dialog_val_path` 字段保留但已不再使用） |
 | L1 种子类别路径 | `PATHS.seed_l1_path` | |
 | LLM provider | `LLM.provider` | `mock`（离线启发式）/ `openai` |
 | LLM 接口 | `LLM.base_url` / `api_key` / `model` | |
@@ -157,7 +165,7 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 | 覆盖率验证重试次数 | `BUILD.max_plan_retries` | |
 | 复杂度检查重试次数 | `BUILD.max_complexity_retries` | |
 | 不再分裂阈值 | `BUILD.min_cases_to_split` | 类别下案例数低于此值不向下分层 |
-| 优化反思重试次数 | `OPTIMIZE.max_reflection_retries` | |
+| 优化反思重试次数 | `OPTIMIZE.max_reflection_retries` | 每个 batch 修改-验证的最大重试次数，超限取历史最优版本 |
 | 错误归因方式 | `OPTIMIZE.attribution_mode` | `oneshot`（一次性归因）/ `multistage`（多阶段逐层向上归因） |
 
 ## 关于 provider

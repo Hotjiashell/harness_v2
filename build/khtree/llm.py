@@ -332,34 +332,46 @@ class LLMClient:
         return {"node_name": chosen, "problem": "trigger",
                 "reason": "mock 多阶段归因：本层 trigger 不当"}
 
-    async def reflect_errors(
-        self, node: Node, error_samples: List[Dict], feedback: str = ""
+    async def refine_trigger(
+        self, node: Node, samples: List[Dict], feedback: str = ""
     ) -> Dict:
         if self.provider == "mock":
-            return self._mock_reflect_errors(node, error_samples)
-        msgs = prompts.reflect_errors_messages(node, error_samples, feedback)
+            return self._mock_refine_trigger(node, samples)
+        msgs = prompts.refine_trigger_messages(node, samples, feedback)
         data = extract_json(await self._chat(msgs))
         return data if isinstance(data, dict) else {}
 
-    def _mock_reflect_errors(self, node: Node, error_samples: List[Dict]) -> Dict:
-        # 收集失败样本对话里的关键词，补进 trigger/background
+    async def refine_background(
+        self, node: Node, samples: List[Dict], feedback: str = ""
+    ) -> Dict:
+        if self.provider == "mock":
+            return self._mock_refine_background(node, samples)
+        msgs = prompts.refine_background_messages(node, samples, feedback)
+        data = extract_json(await self._chat(msgs))
+        return data if isinstance(data, dict) else {}
+
+    def _mock_refine_trigger(self, node: Node, samples: List[Dict]) -> Dict:
         kws = set()
-        problems = set()
-        for s in error_samples:
-            problems.add(s.get("problem", ""))
-            chat = s.get("chat_content", "")
-            ent = _detect_entity(chat)
+        for s in samples:
+            ent = _detect_entity(s.get("chat_content", ""))
             if ent:
                 kws.add(ent)
         extra = "、".join(sorted(kws))
         dialog_trigger = node.dialog_trigger
-        background = node.background
-        if "trigger" in problems and extra:
+        if extra:
             dialog_trigger = (dialog_trigger + f" 当用户提到 {extra} 等相关问题时也应进入该类别。").strip()
-        if "background" in problems and extra:
+        return {"dialog_trigger": dialog_trigger,
+                "reason": "mock 反思：根据失败样本补充触发条件"}
+
+    def _mock_refine_background(self, node: Node, samples: List[Dict]) -> Dict:
+        kws = set()
+        for s in samples:
+            ent = _detect_entity(s.get("chat_content", ""))
+            if ent:
+                kws.add(ent)
+        extra = "、".join(sorted(kws))
+        background = node.background
+        if extra:
             background = (background + f" 补充：{extra} 相关常见问题的处理要点与检索线索。").strip()
-        return {
-            "dialog_trigger": dialog_trigger,
-            "background": background,
-            "reason": "mock 反思：根据失败样本补充触发条件/背景知识",
-        }
+        return {"background": background,
+                "reason": "mock 反思：根据失败样本补充背景知识"}

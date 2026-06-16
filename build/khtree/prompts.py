@@ -306,37 +306,67 @@ def attribute_stage_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def reflect_errors_messages(
-    node: Node, error_samples: List[Dict], feedback: str = ""
+def refine_trigger_messages(
+    node: Node, samples: List[Dict], feedback: str = ""
 ) -> List[Dict[str, str]]:
+    """修改某节点的 dialog_trigger：让归因到该节点的对话能正确进入本类别。"""
     system = (
-        "你是知识节点优化专家。下面是归因到同一个节点的一批失败样本。"
-        "每个样本里：模型根据对话和节点 background 生成了一个检索 query，"
-        "但该 query 没能检索到这条对话本应命中的目标案例（GT 案例）。\n"
-        "请对照「生成的 query」与「目标案例的标题/内容」，分析 query 为何检索不到目标，"
-        "据此改进该节点的 dialog_trigger 或 background（不新增/删除节点）。\n"
-        "dialog_trigger 决定对话能否走到该类别；background 是生成检索 query 的依据，"
-        "background 写得贴近目标案例的用语与要点，才能让 query 检索到目标案例。"
+        "你是知识节点优化专家。下面这批对话本应被分类到指定节点，但当前没能正确进入。"
+        "原因被归因为该节点的 dialog_trigger（触发条件）不当。\n"
+        "dialog_trigger 的作用是说明「什么样的对话应进入该类别」。"
+        "请根据这批对话的共性，改进该节点的 dialog_trigger，使这些对话能正确进入本节点，"
+        "同时避免写得过宽而把明显不相关的对话也吸进来。只改 dialog_trigger，不动 background。\n"
+        "请先简要分析，最后用 ```json``` 代码块输出。"
     )
     sample_lines = []
-    for i, s in enumerate(error_samples, 1):
+    for i, s in enumerate(samples, 1):
         sample_lines.append(
             f"样本{i}：\n"
-            f"  归因问题类型：{s.get('problem', '')}\n"
+            f"  归因原因：{s.get('reason', '')}\n"
+            f"  对话内容：{s.get('chat_content', '')}"
+        )
+    fb = f"\n\n{feedback}" if feedback else ""
+    user = (
+        f"待优化节点：\nname：{node.name}\n"
+        f"当前 dialog_trigger：{node.dialog_trigger}\n\n"
+        f"本应进入该节点、却分类失败的对话：\n"
+        + "\n\n".join(sample_lines) + fb + "\n\n"
+        "请先给出分析，最后用 ```json``` 代码块输出："
+        '{"dialog_trigger":"<改进后的触发条件>","reason":"说明为何这样改"}'
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def refine_background_messages(
+    node: Node, samples: List[Dict], feedback: str = ""
+) -> List[Dict[str, str]]:
+    """修改某节点的 background：让据此生成的 query 能检索到目标案例。"""
+    system = (
+        "你是知识节点优化专家。下面这批对话已正确导航到指定节点，"
+        "但结合该节点 background 生成的检索 query 没能检索到本应命中的目标案例（GT 案例）。"
+        "原因被归因为该节点的 background（背景知识）不足。\n"
+        "background 的作用是提供额外知识，指导生成更容易检索到目标案例的 query。"
+        "请对照「生成的 query」与「目标案例标题/内容」，补充/调整该节点的 background，"
+        "使其贴近目标案例的用语与要点。只改 background，不动 dialog_trigger。\n"
+        "请先简要分析，最后用 ```json``` 代码块输出。"
+    )
+    sample_lines = []
+    for i, s in enumerate(samples, 1):
+        sample_lines.append(
+            f"样本{i}：\n"
             f"  归因原因：{s.get('reason', '')}\n"
             f"  对话内容：{s.get('chat_content', '')}\n"
             f"  生成的检索 query（未能检索到目标案例）：{s.get('query', '')}\n"
             f"  目标案例标题（GT）：{s.get('gt_case_name', '')}\n"
             f"  目标案例内容（GT）：{s.get('gt_case_text', '')}"
         )
-    fb = f"\n\n上一轮反馈（修改未提升召回，请重新调整）：\n{feedback}" if feedback else ""
+    fb = f"\n\n{feedback}" if feedback else ""
     user = (
         f"待优化节点：\nname：{node.name}\n"
-        f"当前 dialog_trigger：{node.dialog_trigger}\n"
         f"当前 background：{node.background}\n\n"
-        f"失败样本（每个样本含：生成的 query + 它本应检索到的目标案例）：\n"
+        f"导航已到位、但 query 检索失败的对话：\n"
         + "\n\n".join(sample_lines) + fb + "\n\n"
-        '请输出 JSON：{"dialog_trigger":"<改进后，不变则原样返回>",'
-        '"background":"<改进后，不变则原样返回>","reason":"..."}'
+        "请先给出分析，最后用 ```json``` 代码块输出："
+        '{"background":"<改进后的背景知识>","reason":"说明为何这样改"}'
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

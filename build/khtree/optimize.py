@@ -49,16 +49,14 @@ class DialogOptimizer:
         llm: LLMClient,
         tree: Tree,
         cases: Dict[str, Case],
-        train: List[Dialog],
-        val: List[Dialog],
+        dialogs: List[Dialog],
         recorder: ErrorRecorder,
     ):
         self.config = config
         self.llm = llm
         self.tree = tree
         self.cases = cases
-        self.train = train
-        self.val = val
+        self.dialogs = dialogs
         self.recorder = recorder
         self.retriever = Retriever(cases)
         self._step = 0
@@ -74,42 +72,49 @@ class DialogOptimizer:
     async def optimize(self) -> Tree:
         stage_banner("阶段二：基于对话数据优化节点内容")
 
-        # 基线召回率
-        base_train = await self._eval_recall(self.train, "baseline-train")
-        base_val = await self._eval_recall(self.val, "baseline-val")
-        log(f"基线召回率：train={base_train:.3f}, val={base_val:.3f}", stage="OPTIMIZE")
-        self._dump("baseline_recall", {"train": base_train, "val": base_val})
+        # 基线召回率（仅作整体观测，不参与接受判定）
+        base_recall = await self._eval_recall(self.dialogs, "baseline")
+        log(f"基线召回率：{base_recall:.3f}", stage="OPTIMIZE")
+        self._dump("baseline_recall", {"recall": base_recall})
 
-        # 用训练集做错误归因
-        results = await self._navigate_and_retrieve(self.train, "train")
+        # 导航+检索+归因
+        results = await self._navigate_and_retrieve(self.dialogs, "all")
         failures = [r for r in results if r is not None and not r.success]
-        log(f"训练集失败样本：{len(failures)}/{len(self.train)}", stage="OPTIMIZE")
+        log(f"失败样本：{len(failures)}/{len(self.dialogs)}", stage="OPTIMIZE")
 
         if not failures:
             log("无失败样本，无需优化。", stage="OPTIMIZE")
             return self.tree
 
-        # 错误归因（并行已在 navigate 阶段完成），按节点聚合成 batch
-        node_batches = self._group_by_node(failures)
+        # 按 (节点, 操作类型) 分 batch：每个节点最多一个 trigger batch + 一个 background batch
+        batches = self._group_batches(failures)
         self._dump(
             "error_batches",
-            {name: [s["dialog"]["call_sno"] for s in samples]
-             for name, samples in node_batches.items()},
+            {f"{name}::{problem}": [s["call_sno"] for s in samples]
+             for (name, problem), samples in batches.items()},
         )
 
-        # 逐节点反思 + 验证
-        cur_train, cur_val = base_train, base_val
-        for node_name, samples in node_batches.items():
+        # 先处理所有 trigger batch（修好导航），再处理所有 background batch（导航到位后优化 query）
+        trigger_batches = {k: v for k, v in batches.items() if k[1] == "trigger"}
+        background_batches = {k: v for k, v in batches.items() if k[1] == "background"}
+
+        for (node_name, _), samples in trigger_batches.items():
             node = self._find_node(node_name)
             if node is None:
-                log(f"归因节点 [{node_name}] 不存在，跳过。", stage="WARN")
+                log(f"归因节点 [{node_name}] 不存在，跳过 trigger batch。", stage="WARN")
                 continue
-            cur_train, cur_val = await self._reflect_and_validate(
-                node, samples, cur_train, cur_val
-            )
+            await self._refine_trigger_batch(node, samples)
 
-        log(f"优化后召回率：train={cur_train:.3f}, val={cur_val:.3f}", stage="OPTIMIZE")
-        self._dump("final_recall", {"train": cur_train, "val": cur_val})
+        for (node_name, _), samples in background_batches.items():
+            node = self._find_node(node_name)
+            if node is None:
+                log(f"归因节点 [{node_name}] 不存在，跳过 background batch。", stage="WARN")
+                continue
+            await self._refine_background_batch(node, samples)
+
+        final_recall = await self._eval_recall(self.dialogs, "final")
+        log(f"优化后召回率：{base_recall:.3f} -> {final_recall:.3f}", stage="OPTIMIZE")
+        self._dump("final_recall", {"baseline": base_recall, "final": final_recall})
         return self.tree
 
     # =======================================================================
@@ -258,17 +263,19 @@ class DialogOptimizer:
         return {"node_name": first, "problem": "trigger",
                 "reason": "多阶段归因到达顶层，归因为首层候选 trigger"}
 
-    def _group_by_node(self, failures: List[NavResult]) -> Dict[str, List[Dict]]:
-        batches: Dict[str, List[Dict]] = {}
+    def _group_batches(self, failures: List[NavResult]) -> Dict[Tuple[str, str], List[Dict]]:
+        """按 (节点名, 操作类型) 分组。每个节点最多一个 trigger batch + 一个 background batch。"""
+        batches: Dict[Tuple[str, str], List[Dict]] = {}
         for r in failures:
             attr = r.attribution or {}
             node_name = attr.get("node_name", "")
             if not node_name:
-                # 没有明确归因则归到最后访问节点
                 node_name = r.visited[-1]["name"] if r.visited else "Root"
+            problem = attr.get("problem", "trigger")
+            if problem not in ("trigger", "background"):
+                problem = "trigger"
             gt = self.cases.get(r.dialog.case_id)
-            batches.setdefault(node_name, []).append({
-                "problem": attr.get("problem", "trigger"),
+            batches.setdefault((node_name, problem), []).append({
                 "reason": attr.get("reason", ""),
                 "chat_content": r.dialog.chat_content,
                 "case_id": r.dialog.case_id,
@@ -276,57 +283,114 @@ class DialogOptimizer:
                 # GT：该对话本应检索到的目标案例（当前 query 没检索到它）
                 "gt_case_name": gt.case_name if gt else "",
                 "gt_case_text": gt.text if gt else "",
-                "dialog": {"call_sno": r.dialog.call_sno},
+                "call_sno": r.dialog.call_sno,
+                # 该对话实际走过的路径节点名（用于 background 验证时重建路径背景）
+                "path_names": [v["name"] for v in r.visited],
+                "dialog_obj": r.dialog,
             })
         return batches
 
     # =======================================================================
-    # 反思 + 验证
+    # trigger batch：修改节点 trigger -> 在该节点所在层重导航验证
     # =======================================================================
-    async def _reflect_and_validate(
-        self, node: Node, samples: List[Dict], cur_train: float, cur_val: float
-    ) -> Tuple[float, float]:
-        scope = f"node[{node.name}]"
+    async def _refine_trigger_batch(self, node: Node, samples: List[Dict]) -> None:
+        scope = f"node[{node.name}].trigger"
         stage_banner(f"优化 {scope}：{len(samples)} 个失败样本")
 
-        original = (node.dialog_trigger, node.background)
+        parent = self._find_parent(node.name)
+        if parent is None or not parent.children:
+            log(f"{scope} 找不到父层，跳过。", stage="WARN")
+            return
+
+        original = node.dialog_trigger
+        best_trigger, best_rate = original, -1.0
         feedback = ""
         for attempt in range(self.config.optimize.max_reflection_retries + 1):
-            reflection = await self.llm.reflect_errors(node, samples, feedback)
-            new_trigger = reflection.get("dialog_trigger", node.dialog_trigger) or node.dialog_trigger
-            new_bg = reflection.get("background", node.background) or node.background
-            self._dump(
-                f"{_safe(node.name)}_reflection_try{attempt+1}",
-                {"dialog_trigger": new_trigger, "background": new_bg,
-                 "reason": reflection.get("reason", "")},
-            )
+            res = await self.llm.refine_trigger(node, samples, feedback)
+            new_trigger = res.get("dialog_trigger", node.dialog_trigger) or node.dialog_trigger
+            node.dialog_trigger = new_trigger  # 试应用（影响同层导航）
 
-            # 试应用
-            node.dialog_trigger, node.background = new_trigger, new_bg
+            # 验证：batch 内每条对话在父层重导航，应选中本节点
+            misroute: List[Dict] = []
+            for s in samples:
+                chosen = await self.llm.navigate(s["chat_content"], parent.children)
+                if chosen != node.name:
+                    misroute.append({"call_sno": s["call_sno"],
+                                     "chat_content": s["chat_content"],
+                                     "chosen": chosen or "（未选中任何节点）"})
+            rate = (len(samples) - len(misroute)) / len(samples)
+            self._dump(f"{_safe(node.name)}_trigger_try{attempt+1}",
+                       {"dialog_trigger": new_trigger, "reason": res.get("reason", ""),
+                        "rate": rate, "misroute": misroute})
+            log(f"{scope} 试改后命中率：{rate:.3f}（{len(samples)-len(misroute)}/{len(samples)}）",
+                stage="OPTIMIZE")
 
-            new_train = await self._eval_recall(self.train, f"{node.name}-train-try{attempt+1}")
-            new_val = await self._eval_recall(self.val, f"{node.name}-val-try{attempt+1}")
-            log(f"{scope} 试改后：train {cur_train:.3f}->{new_train:.3f}, "
-                f"val {cur_val:.3f}->{new_val:.3f}", stage="OPTIMIZE")
+            if rate > best_rate:
+                best_trigger, best_rate = new_trigger, rate
+            if not misroute:
+                log(f"{scope} 全部正确分类，接受。", stage="OPTIMIZE")
+                return
 
-            # 接受条件：训练集与验证集召回率均未下降，且至少一个提高
-            improved = (new_train + new_val) > (cur_train + cur_val)
-            not_worse = new_train >= cur_train and new_val >= cur_val
-            if improved and not_worse:
-                log(f"{scope} 修改有效，接受。", stage="OPTIMIZE")
-                return new_train, new_val
+            node.dialog_trigger = original  # 回滚后带反馈重试
+            feedback = _trigger_feedback(new_trigger, misroute, node.name)
+            log(f"{scope} 仍有 {len(misroute)} 条未分类正确，重试。", stage="OPTIMIZE")
 
-            # 回滚，生成反馈重试
-            node.dialog_trigger, node.background = original
-            feedback = (
-                f"上一次修改未提升召回率（train {cur_train:.3f}->{new_train:.3f}, "
-                f"val {cur_val:.3f}->{new_val:.3f}）。请换一种思路调整 "
-                f"dialog_trigger 或 background。"
-            )
-            log(f"{scope} 修改无效，回滚并重试。", stage="OPTIMIZE")
+        node.dialog_trigger = best_trigger
+        log(f"{scope} 达到最大重试，采用历史最优版本（命中率 {best_rate:.3f}）。", stage="WARN")
 
-        log(f"{scope} 达到最大重试，保留原内容。", stage="WARN")
-        return cur_train, cur_val
+    # =======================================================================
+    # background batch：修改节点 background -> 重建路径背景生成 query 验证检索
+    # =======================================================================
+    async def _refine_background_batch(self, node: Node, samples: List[Dict]) -> None:
+        scope = f"node[{node.name}].background"
+        stage_banner(f"优化 {scope}：{len(samples)} 个失败样本")
+
+        original = node.background
+        best_bg, best_rate = original, -1.0
+        feedback = ""
+        for attempt in range(self.config.optimize.max_reflection_retries + 1):
+            res = await self.llm.refine_background(node, samples, feedback)
+            new_bg = res.get("background", node.background) or node.background
+            node.background = new_bg  # 试应用
+
+            # 验证：沿对话原路径重建背景（含改后的新 BG）-> 生成 query -> 检索是否命中 GT
+            still_fail: List[Dict] = []
+            for s in samples:
+                backgrounds = self._collect_path_backgrounds(s["path_names"])
+                query = await self.llm.generate_query(s["chat_content"], backgrounds)
+                ok = await self.retriever.retrieve(query, s["case_id"])
+                if not ok:
+                    still_fail.append({"call_sno": s["call_sno"], "query": query,
+                                       "gt_case_name": s["gt_case_name"],
+                                       "gt_case_text": s["gt_case_text"]})
+            rate = (len(samples) - len(still_fail)) / len(samples)
+            self._dump(f"{_safe(node.name)}_background_try{attempt+1}",
+                       {"background": new_bg, "reason": res.get("reason", ""),
+                        "rate": rate, "still_fail": still_fail})
+            log(f"{scope} 试改后召回率：{rate:.3f}（{len(samples)-len(still_fail)}/{len(samples)}）",
+                stage="OPTIMIZE")
+
+            if rate > best_rate:
+                best_bg, best_rate = new_bg, rate
+            if not still_fail:
+                log(f"{scope} 全部成功检索，接受。", stage="OPTIMIZE")
+                return
+
+            node.background = original  # 回滚后带反馈重试
+            feedback = _background_feedback(new_bg, still_fail)
+            log(f"{scope} 仍有 {len(still_fail)} 条未检索到，重试。", stage="OPTIMIZE")
+
+        node.background = best_bg
+        log(f"{scope} 达到最大重试，采用历史最优版本（召回率 {best_rate:.3f}）。", stage="WARN")
+
+    def _collect_path_backgrounds(self, path_names: List[str]) -> List[str]:
+        """按路径节点名，从当前树取各节点 background（自动反映已修改的新 BG）。"""
+        backgrounds: List[str] = []
+        for name in path_names:
+            n = self._find_node(name)
+            if n is not None and n.background:
+                backgrounds.append(n.background)
+        return backgrounds
 
     # =======================================================================
     # 召回率评估
@@ -380,6 +444,45 @@ class DialogOptimizer:
 
         walk(self.tree.root)
         return found[0] if found else None
+
+    def _find_parent(self, name: str) -> Optional[Node]:
+        """返回 name 节点的父节点（root 的子节点的父节点即 root）。"""
+        found: List[Node] = []
+
+        def walk(n: Node) -> None:
+            for c in n.children:
+                if c.name == name:
+                    found.append(n)
+                walk(c)
+
+        walk(self.tree.root)
+        return found[0] if found else None
+
+
+def _trigger_feedback(prev_trigger: str, misroute: List[Dict], node_name: str) -> str:
+    lines = [
+        f"上一次你把 dialog_trigger 改成了：{prev_trigger}",
+        f"但以下对话仍未被正确分类到节点「{node_name}」（导航选到了别处或未选中）：",
+    ]
+    for m in misroute:
+        lines.append(f"  - 实际选到「{m['chosen']}」｜对话：{m['chat_content']}")
+    lines.append("请进一步调整 dialog_trigger，使这些对话能正确进入本节点，"
+                 "同时不要把明显不相关的对话也包含进来。")
+    return "\n".join(lines)
+
+
+def _background_feedback(prev_bg: str, still_fail: List[Dict]) -> str:
+    lines = [
+        f"上一次你把 background 改成了：{prev_bg}",
+        "但以下对话据此生成的 query 仍未能检索到目标案例：",
+    ]
+    for f in still_fail:
+        lines.append(
+            f"  - 生成的 query：{f['query']}｜目标案例：{f['gt_case_name']}：{f['gt_case_text']}"
+        )
+    lines.append("请进一步补充/调整 background，使其能指导生成更贴近目标案例、"
+                 "更容易检索到目标案例的 query。")
+    return "\n".join(lines)
 
 
 def _safe(text: str) -> str:

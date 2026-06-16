@@ -117,8 +117,7 @@ async def run_build(args) -> Tree:
 async def run_optimize(args) -> Tree:
     recorder, llm = _setup()
     cases = _load_cases()
-    train = _load_dialogs(CONFIG.paths.dialog_train_path)
-    val = _load_dialogs(CONFIG.paths.dialog_val_path)
+    dialogs = _load_dialogs(CONFIG.paths.dialog_train_path)
 
     tree_path = Path(args.tree) if args.tree else CONFIG.paths.case_tree_path
     if not tree_path.exists():
@@ -130,7 +129,7 @@ async def run_optimize(args) -> Tree:
     tree = Tree.from_dict(read_json(load_path))
     log(f"载入待优化知识树：{load_path}", stage="OPTIMIZE")
 
-    optimizer = DialogOptimizer(CONFIG, llm, tree, cases, train, val, recorder)
+    optimizer = DialogOptimizer(CONFIG, llm, tree, cases, dialogs, recorder)
     tree = await optimizer.optimize()
 
     _save_tree(tree, CONFIG.paths.final_tree_path)
