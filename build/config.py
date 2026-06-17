@@ -31,7 +31,10 @@ from khtree.config_types import (  # noqa: E402
 PATHS = PathSettings(
     # 案例库：{case_id: {case_name, text}}
     case_path=ROOT_DIR / "data" / "case" / "text.json",
-    # 对话训练集 / 验证集：[{call_sno, chat_content, caseID}]
+    # 阶段二对话集：
+    #   dialog_train_path —— 用于错误归因与节点优化（训练集）
+    #   dialog_val_path   —— 仅在优化前后各跑一次召回率供人工观测泛化效果，
+    #                        不参与优化/反馈；为发挥作用应指向与 train 不同的对话集。
     dialog_train_path=ROOT_DIR / "data" / "dialog" / "dialog.json",
     dialog_val_path=ROOT_DIR / "data" / "dialog" / "dialog.json",
     # L1 人工初始类别

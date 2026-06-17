@@ -52,12 +52,14 @@ class DialogOptimizer:
         cases: Dict[str, Case],
         dialogs: List[Dialog],
         recorder: ErrorRecorder,
+        val: Optional[List[Dialog]] = None,
     ):
         self.config = config
         self.llm = llm
         self.tree = tree
         self.cases = cases
         self.dialogs = dialogs
+        self.val = val or []
         self.recorder = recorder
         self.retriever = Retriever(cases)
         self._step = 0
@@ -67,6 +69,9 @@ class DialogOptimizer:
         self._orig_trigger: Dict[str, str] = {}
         self._orig_background: Dict[str, str] = {}
         self._layer_siblings: Dict[str, List[str]] = {}
+        # 入口兜底：dialog_trigger 为空的节点用 case_trigger 初始化（载入的树可能由旧版本
+        # 构建、或未经初始化）。建树末尾已做一次，这里对加载进来的树再保证一遍。
+        self._init_dialog_trigger(self.tree.root)
         self._build_snapshot()
         # 全局共享并发闸：无论多少 batch 并行，真正在途的 LLM/检索调用数 ≤ concurrency。
         # 延迟到 optimize() 内（事件循环已就绪）创建，避免 Semaphore 绑定到错误的 loop。
@@ -83,6 +88,13 @@ class DialogOptimizer:
 
         walk(self.tree.root)
 
+    def _init_dialog_trigger(self, node: Node) -> None:
+        """dialog_trigger 为空的节点用 case_trigger 兜底初始化（不覆盖已有值）。"""
+        for c in node.children:
+            if not (c.dialog_trigger or "").strip() and (c.case_trigger or "").strip():
+                c.dialog_trigger = c.case_trigger
+            self._init_dialog_trigger(c)
+
     def _dump(self, tag: str, data) -> None:
         self._step += 1
         name = f"opt_{self._step:03d}_{tag}.json"
@@ -97,8 +109,12 @@ class DialogOptimizer:
 
         # 基线召回率（仅作整体观测，不参与接受判定）
         base_recall = await self._eval_recall(self.dialogs, "baseline")
-        log(f"基线召回率：{base_recall:.3f}", stage="OPTIMIZE")
-        self._dump("baseline_recall", {"recall": base_recall})
+        log(f"基线召回率（优化集）：{base_recall:.3f}", stage="OPTIMIZE")
+        base_val = None
+        if self.val:
+            base_val = await self._eval_recall(self.val, "baseline-val")
+            log(f"基线召回率（验证集，仅观测）：{base_val:.3f}", stage="OPTIMIZE")
+        self._dump("baseline_recall", {"train": base_recall, "val": base_val})
 
         # 导航+检索+归因
         results = await self._navigate_and_retrieve(self.dialogs, "all")
@@ -133,8 +149,13 @@ class DialogOptimizer:
         await asyncio.gather(*[_run_batch(k, v) for k, v in batches.items()])
 
         final_recall = await self._eval_recall(self.dialogs, "final")
-        log(f"优化后召回率：{base_recall:.3f} -> {final_recall:.3f}", stage="OPTIMIZE")
-        self._dump("final_recall", {"baseline": base_recall, "final": final_recall})
+        log(f"优化后召回率（优化集）：{base_recall:.3f} -> {final_recall:.3f}", stage="OPTIMIZE")
+        final_val = None
+        if self.val:
+            final_val = await self._eval_recall(self.val, "final-val")
+            log(f"优化后召回率（验证集，仅观测）：{base_val:.3f} -> {final_val:.3f}", stage="OPTIMIZE")
+        self._dump("final_recall", {"train": {"baseline": base_recall, "final": final_recall},
+                                    "val": {"baseline": base_val, "final": final_val}})
         return self.tree
 
     # =======================================================================

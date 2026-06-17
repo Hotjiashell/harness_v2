@@ -118,6 +118,8 @@ async def run_optimize(args) -> Tree:
     recorder, llm = _setup()
     cases = _load_cases()
     dialogs = _load_dialogs(CONFIG.paths.dialog_train_path)
+    # 验证集：仅用于优化前后各跑一次召回率供人工观测，不参与优化/反馈
+    val = _load_dialogs(CONFIG.paths.dialog_val_path) if CONFIG.paths.dialog_val_path else []
 
     tree_path = Path(args.tree) if args.tree else CONFIG.paths.case_tree_path
     if not tree_path.exists():
@@ -129,7 +131,7 @@ async def run_optimize(args) -> Tree:
     tree = Tree.from_dict(read_json(load_path))
     log(f"载入待优化知识树：{load_path}", stage="OPTIMIZE")
 
-    optimizer = DialogOptimizer(CONFIG, llm, tree, cases, dialogs, recorder)
+    optimizer = DialogOptimizer(CONFIG, llm, tree, cases, dialogs, recorder, val=val)
     tree = await optimizer.optimize()
 
     _save_tree(tree, CONFIG.paths.final_tree_path)

@@ -144,7 +144,9 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 
 > 并发控制：所有并行 batch 及 batch 内每条对话的验证，共用一个全局 `asyncio.Semaphore`，真正在途的 LLM/检索调用数始终不超过 `LLM.concurrency`。
 
-> 不再划分训练/验证集，也不再用全量召回率作逐节点的硬约束（全量召回率仅在开头/结尾各算一次作整体观测）。验证改为针对每个 batch 的局部目标，反馈也据此具体生成。
+> 不再用全量召回率作逐节点的硬约束。验证改为针对每个 batch 的局部目标，反馈也据此具体生成。
+>
+> **验证集（仅观测）**：`dialog_val_path` 指向一份独立对话集，仅在优化**前后各跑一次**整体召回率，打印 baseline → final 供人工评估泛化效果——不参与归因、不分 batch、不产生反馈、不影响任何接受判定。`dialog_train_path` 才是用于归因与优化的训练集。两者指向同一文件时验证集召回率等同训练集，失去观测意义。
 
 检索调用根目录 `retrieve.py::retrieve(query, caseID) -> bool`（内部由 `retrieve_case` 实现；`retrieve_case` 当前为未实现的桩）。
 
@@ -156,7 +158,8 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 |------|------|------|
 | 运行阶段 | `RUNTIME.run_stage` | `build` 只构建 / `all` 构建后接着优化（不带子命令时生效） |
 | 案例库路径 | `PATHS.case_path` | |
-| 对话数据路径 | `PATHS.dialog_train_path` | 阶段二优化所用对话集（`dialog_val_path` 字段保留但已不再使用） |
+| 对话训练集路径 | `PATHS.dialog_train_path` | 阶段二用于错误归因与节点优化的对话集 |
+| 对话验证集路径 | `PATHS.dialog_val_path` | 仅在优化前后各跑一次召回率供人工观测，不参与优化/反馈；应与训练集不同 |
 | L1 种子类别路径 | `PATHS.seed_l1_path` | |
 | LLM provider | `LLM.provider` | `mock`（离线启发式）/ `openai` |
 | LLM 接口 | `LLM.base_url` / `api_key` / `model` | |

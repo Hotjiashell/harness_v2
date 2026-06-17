@@ -86,6 +86,9 @@ class CaseTreeBuilder:
 
         # 逐层处理
         await self._process_levels(tree, resume_from_level)
+        # dialog_trigger 缺省时用 case_trigger 初始化：建树阶段只产出 case_trigger，
+        # 而阶段二导航依赖 dialog_trigger，给它一个合理起点（不覆盖已有值）。
+        _init_dialog_trigger(tree.root)
         return tree
 
     async def _process_levels(self, tree: Tree, start_level: int) -> None:
@@ -577,3 +580,11 @@ class CaseTreeBuilder:
 
 def _safe(text: str) -> str:
     return text.replace("/", "_").replace(" ", "")
+
+
+def _init_dialog_trigger(node: Node) -> None:
+    """递归：dialog_trigger 为空的节点用 case_trigger 兜底初始化（不覆盖已有值）。"""
+    for c in node.children:
+        if not (c.dialog_trigger or "").strip() and (c.case_trigger or "").strip():
+            c.dialog_trigger = c.case_trigger
+        _init_dialog_trigger(c)
