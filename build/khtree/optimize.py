@@ -107,19 +107,20 @@ class DialogOptimizer:
         stage_banner("阶段二：基于对话数据优化节点内容")
         self._sem = asyncio.Semaphore(max(1, self.config.llm.concurrency))
 
-        # 基线召回率（仅作整体观测，不参与接受判定）
-        base_recall = await self._eval_recall(self.dialogs, "baseline")
+        # 导航+检索+归因：优化集只跑这一遍，基线召回率直接从结果统计（避免重复导航）
+        results = await self._navigate_and_retrieve(self.dialogs, "all")
+        valid = [r for r in results if r is not None]
+        failures = [r for r in valid if not r.success]
+        base_recall = (len(valid) - len(failures)) / len(valid) if valid else 0.0
         log(f"基线召回率（优化集）：{base_recall:.3f}", stage="OPTIMIZE")
+        log(f"失败样本：{len(failures)}/{len(self.dialogs)}", stage="OPTIMIZE")
+
+        # 验证集：独立对话集，仅在优化前后各跑一次召回率供人工观测，不参与优化/反馈
         base_val = None
         if self.val:
             base_val = await self._eval_recall(self.val, "baseline-val")
             log(f"基线召回率（验证集，仅观测）：{base_val:.3f}", stage="OPTIMIZE")
         self._dump("baseline_recall", {"train": base_recall, "val": base_val})
-
-        # 导航+检索+归因
-        results = await self._navigate_and_retrieve(self.dialogs, "all")
-        failures = [r for r in results if r is not None and not r.success]
-        log(f"失败样本：{len(failures)}/{len(self.dialogs)}", stage="OPTIMIZE")
 
         if not failures:
             log("无失败样本，无需优化。", stage="OPTIMIZE")
