@@ -130,7 +130,10 @@ class DialogOptimizer:
         batches = self._group_batches(failures)
         self._dump(
             "error_batches",
-            {f"{name}::{problem}": [s["call_sno"] for s in samples]
+            {f"{name}::{problem}": [
+                {"call_sno": s["call_sno"], "reason": s.get("reason", "")}
+                for s in samples
+            ]
              for (name, problem), samples in batches.items()},
         )
 
