@@ -78,6 +78,17 @@ python3 build/run.py build \
 python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 ```
 
+**阶段二断点续跑（自动检测，无需额外参数）**：再次运行 `optimize` 时，若 `output/intermediate/optimize/` 下已有中间产物，会自动续跑（不改既有文件格式，与历史产物兼容）：
+
+- **复用导航/归因**：存在 `*_navigate_all.json` 则直接读取，跳过最耗时的导航+检索+归因。
+- **复用基线召回率**：存在 `*_baseline_recall.json` 则直接读取，验证集基线也不再重跑。
+- **逐 batch 续跑**：按每个 batch 的 `{node}_{problem}_try{n}.json` 判断进度——
+  - 某个 try 的 `rate == 1.0`、或已存在 `try{最大重试次数+1}` → 该 batch 视为已完成，采用 `rate` 最高的 try 值，直接跳过；
+  - 否则（中途中断）从最后一个有效 try 之后继续重试。
+- **健壮性**：损坏/缺字段的 try 文件按"不存在"处理；同一 try 序号有多份时取序号最大的有效版本。
+
+想完全重跑阶段二，删除 `output/intermediate/optimize/` 即可。
+
 ## 两个阶段
 
 ### 阶段一：基于案例库构建（`build_tree.py`）
@@ -182,8 +193,8 @@ python3 build/run.py optimize --tree build/output/knowledge_tree_case.json
 
 ## 健壮性
 
-- **错误隔离**：单条案例/对话处理出错不会中断整体流程，失败项被跳过并记录到 `output/errors.log`。
+- **错误隔离**：单条案例/对话处理出错不会中断整体流程，失败项被跳过并记录到 `output/errors.log`。阶段二的并行 batch（反思/验证/单条对话验证）同样逐个兜底——单个 batch 或单条验证抛错只记录并降级，不会连累其他 batch。
 - **中间产物**：每个阶段都按序号写出 JSON 到 `output/intermediate/`，便于排查“跑到哪一步、结果是什么”。
 - **进度可视**：命令行用 `tqdm` 进度条 + 带时间戳的阶段日志输出。
-- **续跑**：阶段一可从任意层中间树继续；阶段二可独立基于已构建的树运行。
+- **续跑**：阶段一可从任意层中间树继续；阶段二再次运行时自动检测 `intermediate/optimize/` 产物断点续跑（复用导航/归因/基线，逐 batch 跳过或续跑）。
 ```

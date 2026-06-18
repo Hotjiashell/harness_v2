@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Dict, List, Optional, Tuple
 
 from .config_types import HarnessConfig
@@ -24,6 +25,7 @@ from .utils import (
     dump_intermediate,
     gather_limited,
     log,
+    read_json,
     stage_banner,
 )
 
@@ -76,6 +78,8 @@ class DialogOptimizer:
         # 全局共享并发闸：无论多少 batch 并行，真正在途的 LLM/检索调用数 ≤ concurrency。
         # 延迟到 optimize() 内（事件循环已就绪）创建，避免 Semaphore 绑定到错误的 loop。
         self._sem: Optional[asyncio.Semaphore] = None
+        # 断点续跑：检测到 optimize 中间产物时置 True，启用 navigate_all 复用 + 逐 batch 续跑。
+        self._resume = False
 
     def _build_snapshot(self) -> None:
         def walk(n: Node) -> None:
@@ -101,26 +105,165 @@ class DialogOptimizer:
         dump_intermediate(self.config.paths.intermediate_dir / "optimize", name, data)
 
     # =======================================================================
+    # 断点续跑：复用 optimize 中间产物（不改既有文件格式）
+    # =======================================================================
+    def _optimize_dir(self):
+        return self.config.paths.intermediate_dir / "optimize"
+
+    def _load_optimize_resume(self) -> Optional[List[Dict]]:
+        """若存在 navigate_all 产物则返回其记录（启用续跑），否则 None（全新跑）。
+
+        同时把 _step 推进到已有文件的最大序号，使后续 _dump 接着编号、不覆盖旧文件。
+        """
+        d = self._optimize_dir()
+        if not d.exists():
+            return None
+
+        def prefix_of(p) -> int:
+            m = re.match(r"^opt_(\d+)_", p.name)
+            return int(m.group(1)) if m else 0
+
+        nav_files = sorted(d.glob("opt_*_navigate_all.json"), key=prefix_of)
+        if not nav_files:
+            return None
+        # 续跑时接着已有最大序号编号
+        self._step = max((prefix_of(p) for p in d.glob("opt_*.json")), default=0)
+        try:
+            records = read_json(nav_files[-1])  # 取序号最大（最新）的一份
+        except Exception as exc:  # noqa: BLE001
+            log(f"navigate_all 产物损坏，放弃续跑改为全新跑：{exc}", stage="WARN")
+            return None
+        return records if isinstance(records, list) else None
+
+    def _load_baseline_recall(self) -> Optional[Dict]:
+        """续跑时读取已落盘的 baseline_recall 产物（取序号最大的一份），无则 None。"""
+        d = self._optimize_dir()
+        if not d.exists():
+            return None
+
+        def prefix_of(p) -> int:
+            m = re.match(r"^opt_(\d+)_", p.name)
+            return int(m.group(1)) if m else 0
+
+        files = sorted(d.glob("opt_*_baseline_recall.json"), key=prefix_of)
+        if not files:
+            return None
+        try:
+            data = read_json(files[-1])
+        except Exception:  # noqa: BLE001
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _reconstruct_results(self, records: List[Dict]) -> List["NavResult"]:
+        """用 navigate_all 记录 + 当前对话集重建 NavResult（按 call_sno 关联取回 chat_content）。"""
+        by_sno = {d.call_sno: d for d in self.dialogs}
+        out: List[NavResult] = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            d = by_sno.get(str(rec.get("call_sno", "")))
+            if d is None:
+                continue
+            res = NavResult(d)
+            res.query = rec.get("query", "")
+            res.success = bool(rec.get("success"))
+            res.attribution = rec.get("attribution")
+            res.levels = rec.get("levels", []) or []
+            res.visited = [{"name": n} for n in (rec.get("visited", []) or [])]
+            out.append(res)
+        return out
+
+    def _scan_tries(self, node_name: str, problem: str,
+                    value_key: str, fail_key: str) -> Dict[int, Dict]:
+        """扫描某 batch 的所有 try 文件，返回 {try序号: {value, rate, fails}}。
+
+        健壮性：损坏/缺字段的文件按"不存在"处理；同一 try 序号有多份时取序号最大的有效版本。
+        """
+        d = self._optimize_dir()
+        if not d.exists():
+            return {}
+        pat = re.compile(rf"^opt_(\d+)_{re.escape(_safe(node_name))}_{problem}_try(\d+)$")
+        best_per_k: Dict[int, Tuple[int, Dict]] = {}
+        for p in d.glob("opt_*_try*.json"):
+            m = pat.match(p.stem)
+            if not m:
+                continue
+            prefix, k = int(m.group(1)), int(m.group(2))
+            try:
+                data = read_json(p)
+            except Exception:  # noqa: BLE001
+                continue  # 损坏 -> 当作不存在
+            if not isinstance(data, dict) or "rate" not in data:
+                continue
+            if k not in best_per_k or prefix > best_per_k[k][0]:
+                best_per_k[k] = (prefix, data)
+        out: Dict[int, Dict] = {}
+        for k, (_prefix, data) in best_per_k.items():
+            out[k] = {"value": data.get(value_key, ""),
+                      "rate": float(data.get("rate", -1.0)),
+                      "fails": data.get(fail_key, []) or []}
+        return out
+
+    def _resume_batch_state(self, node_name: str, problem: str,
+                            value_key: str, fail_key: str) -> Optional[Dict]:
+        """根据已有 try 文件判定 batch 续跑状态。非续跑模式或无 try 文件返回 None。"""
+        if not self._resume:
+            return None
+        tries = self._scan_tries(node_name, problem, value_key, fail_key)
+        if not tries:
+            return None
+        max_attempts = self.config.optimize.max_reflection_retries + 1
+        # 最优版本：rate 最高，并列取 try 序号最小（与在线逻辑的 strict > 一致）
+        best_k = max(tries, key=lambda k: (tries[k]["rate"], -k))
+        accepted = any(t["rate"] >= 1.0 for t in tries.values())
+        exhausted = max_attempts in tries
+        last_k = max(tries)
+        return {
+            "completed": accepted or exhausted,
+            "best_value": tries[best_k]["value"],
+            "best_rate": tries[best_k]["rate"],
+            "start_attempt": last_k,           # 已完成 last_k 轮，从 try{last_k+1} 续
+            "last_value": tries[last_k]["value"],
+            "last_fails": tries[last_k]["fails"],
+        }
+
+    # =======================================================================
     # 入口
     # =======================================================================
     async def optimize(self) -> Tree:
         stage_banner("阶段二：基于对话数据优化节点内容")
         self._sem = asyncio.Semaphore(max(1, self.config.llm.concurrency))
 
-        # 导航+检索+归因：优化集只跑这一遍，基线召回率直接从结果统计（避免重复导航）
-        results = await self._navigate_and_retrieve(self.dialogs, "all")
+        # 断点续跑检测：若 optimize 中间产物里已有 navigate_all，则复用它跳过导航+归因
+        cached_base = None
+        records = self._load_optimize_resume()
+        if records is not None:
+            self._resume = True
+            log(f"检测到 optimize 中间产物，启用断点续跑（复用导航结果 {len(records)} 条）",
+                stage="OPTIMIZE")
+            results = self._reconstruct_results(records)
+            cached_base = self._load_baseline_recall()
+        else:
+            # 导航+检索+归因：优化集只跑这一遍，基线召回率直接从结果统计（避免重复导航）
+            results = await self._navigate_and_retrieve(self.dialogs, "all")
         valid = [r for r in results if r is not None]
         failures = [r for r in valid if not r.success]
         base_recall = (len(valid) - len(failures)) / len(valid) if valid else 0.0
         log(f"基线召回率（优化集）：{base_recall:.3f}", stage="OPTIMIZE")
         log(f"失败样本：{len(failures)}/{len(self.dialogs)}", stage="OPTIMIZE")
 
-        # 验证集：独立对话集，仅在优化前后各跑一次召回率供人工观测，不参与优化/反馈
-        base_val = None
-        if self.val:
-            base_val = await self._eval_recall(self.val, "baseline-val")
-            log(f"基线召回率（验证集，仅观测）：{base_val:.3f}", stage="OPTIMIZE")
-        self._dump("baseline_recall", {"train": base_recall, "val": base_val})
+        # 验证集：独立对话集，仅在优化前后各跑一次召回率供人工观测，不参与优化/反馈。
+        # 续跑且已有 baseline_recall 产物时直接复用，验证集基线不再重跑。
+        if cached_base is not None:
+            base_val = cached_base.get("val")
+            log(f"基线召回率（验证集，复用产物）：{base_val if base_val is not None else '—'}",
+                stage="OPTIMIZE")
+        else:
+            base_val = None
+            if self.val:
+                base_val = await self._eval_recall(self.val, "baseline-val")
+                log(f"基线召回率（验证集，仅观测）：{base_val:.3f}", stage="OPTIMIZE")
+            self._dump("baseline_recall", {"train": base_recall, "val": base_val})
 
         if not failures:
             log("无失败样本，无需优化。", stage="OPTIMIZE")
@@ -355,7 +498,19 @@ class DialogOptimizer:
         original = self._orig_trigger.get(node.name, node.dialog_trigger)
         best_trigger, best_rate = original, -1.0
         feedback = ""
-        for attempt in range(self.config.optimize.max_reflection_retries + 1):
+        start_attempt = 0
+        # 断点续跑：扫描已有 try 文件，已完成则直接采用最优值，未完成则从断点续跑
+        state = self._resume_batch_state(node.name, "trigger", "dialog_trigger", "misroute")
+        if state is not None:
+            if state["completed"]:
+                node.dialog_trigger = state["best_value"]
+                log(f"{scope} 续跑：已完成（命中率 {state['best_rate']:.3f}），跳过。", stage="OPTIMIZE")
+                return
+            best_trigger, best_rate = state["best_value"], state["best_rate"]
+            start_attempt = state["start_attempt"]
+            feedback = _trigger_feedback(state["last_value"], state["last_fails"], node.name)
+            log(f"{scope} 续跑：已有 {start_attempt} 轮，从 try{start_attempt+1} 继续。", stage="OPTIMIZE")
+        for attempt in range(start_attempt, self.config.optimize.max_reflection_retries + 1):
             try:
                 async with self._sem:
                     res = await self.llm.refine_trigger(node, samples, feedback)
@@ -414,7 +569,19 @@ class DialogOptimizer:
         original = self._orig_background.get(node.name, node.background)
         best_bg, best_rate = original, -1.0
         feedback = ""
-        for attempt in range(self.config.optimize.max_reflection_retries + 1):
+        start_attempt = 0
+        # 断点续跑：扫描已有 try 文件，已完成则直接采用最优值，未完成则从断点续跑
+        state = self._resume_batch_state(node.name, "background", "background", "still_fail")
+        if state is not None:
+            if state["completed"]:
+                node.background = state["best_value"]
+                log(f"{scope} 续跑：已完成（召回率 {state['best_rate']:.3f}），跳过。", stage="OPTIMIZE")
+                return
+            best_bg, best_rate = state["best_value"], state["best_rate"]
+            start_attempt = state["start_attempt"]
+            feedback = _background_feedback(state["last_value"], state["last_fails"])
+            log(f"{scope} 续跑：已有 {start_attempt} 轮，从 try{start_attempt+1} 继续。", stage="OPTIMIZE")
+        for attempt in range(start_attempt, self.config.optimize.max_reflection_retries + 1):
             try:
                 async with self._sem:
                     res = await self.llm.refine_background(node, samples, feedback)
