@@ -134,7 +134,10 @@ async def run_optimize(args) -> Tree:
     optimizer = DialogOptimizer(CONFIG, llm, tree, cases, dialogs, recorder, val=val)
     tree = await optimizer.optimize()
 
+    # 先把优化后的树落盘（成果优先保全），再评估召回率（验证集先、训练集后）
     _save_tree(tree, CONFIG.paths.final_tree_path)
+    await optimizer.evaluate_final()
+
     stage_banner("阶段二完成：最终知识树")
     _print_tree(tree)
     log(f"错误总数：{recorder.count}（详见 {CONFIG.paths.error_log_path}）", stage="DONE")

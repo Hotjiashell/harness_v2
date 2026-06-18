@@ -265,6 +265,10 @@ class DialogOptimizer:
                 log(f"基线召回率（验证集，仅观测）：{base_val:.3f}", stage="OPTIMIZE")
             self._dump("baseline_recall", {"train": base_recall, "val": base_val})
 
+        # 记下基线供 evaluate_final() 使用（树落盘后再评估优化后召回率）
+        self._base_recall = base_recall
+        self._base_val = base_val
+
         if not failures:
             log("无失败样本，无需优化。", stage="OPTIMIZE")
             return self.tree
@@ -300,15 +304,29 @@ class DialogOptimizer:
 
         await asyncio.gather(*[_run_batch(k, v) for k, v in batches.items()])
 
-        final_recall = await self._eval_recall(self.dialogs, "final")
-        log(f"优化后召回率（优化集）：{base_recall:.3f} -> {final_recall:.3f}", stage="OPTIMIZE")
+        # 优化后召回率不在此评估：先由调用方把树落盘，再调用 evaluate_final()。
+        return self.tree
+
+    async def evaluate_final(self) -> None:
+        """评估优化后召回率（仅观测）：先验证集、后训练集。应在树已落盘后调用。"""
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(max(1, self.config.llm.concurrency))
+        base_recall = getattr(self, "_base_recall", 0.0)
+        base_val = getattr(self, "_base_val", None)
+
+        # 先验证集（仅观测）
         final_val = None
         if self.val:
             final_val = await self._eval_recall(self.val, "final-val")
-            log(f"优化后召回率（验证集，仅观测）：{base_val:.3f} -> {final_val:.3f}", stage="OPTIMIZE")
+            base_val_str = f"{base_val:.3f}" if isinstance(base_val, (int, float)) else "—"
+            log(f"优化后召回率（验证集，仅观测）：{base_val_str} -> {final_val:.3f}", stage="OPTIMIZE")
+
+        # 后训练集（优化集）
+        final_recall = await self._eval_recall(self.dialogs, "final")
+        log(f"优化后召回率（优化集）：{base_recall:.3f} -> {final_recall:.3f}", stage="OPTIMIZE")
+
         self._dump("final_recall", {"train": {"baseline": base_recall, "final": final_recall},
                                     "val": {"baseline": base_val, "final": final_val}})
-        return self.tree
 
     # =======================================================================
     # 导航 + 检索 + 归因（并行）
