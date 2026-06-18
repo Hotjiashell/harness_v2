@@ -141,14 +141,19 @@ class DialogOptimizer:
         # 互不依赖；总并发由共享 semaphore 统一限制在 config.llm.concurrency 内。
         async def _run_batch(key: Tuple[str, str], samples: List[Dict]) -> None:
             node_name, problem = key
-            node = self._find_node(node_name)
-            if node is None:
-                log(f"归因节点 [{node_name}] 不存在，跳过 {problem} batch。", stage="WARN")
-                return
-            if problem == "trigger":
-                await self._refine_trigger_batch(node, samples)
-            else:
-                await self._refine_background_batch(node, samples)
+            try:
+                node = self._find_node(node_name)
+                if node is None:
+                    log(f"归因节点 [{node_name}] 不存在，跳过 {problem} batch。", stage="WARN")
+                    return
+                if problem == "trigger":
+                    await self._refine_trigger_batch(node, samples)
+                else:
+                    await self._refine_background_batch(node, samples)
+            except Exception as exc:  # noqa: BLE001
+                # 单个 batch 失败不影响其他 batch：记录并跳过（该节点保持原内容）
+                self.recorder.record(f"refine_batch[{node_name}::{problem}]", exc,
+                                     context=f"{len(samples)} samples")
 
         await asyncio.gather(*[_run_batch(k, v) for k, v in batches.items()])
 
@@ -351,8 +356,13 @@ class DialogOptimizer:
         best_trigger, best_rate = original, -1.0
         feedback = ""
         for attempt in range(self.config.optimize.max_reflection_retries + 1):
-            async with self._sem:
-                res = await self.llm.refine_trigger(node, samples, feedback)
+            try:
+                async with self._sem:
+                    res = await self.llm.refine_trigger(node, samples, feedback)
+            except Exception as exc:  # noqa: BLE001
+                # 本轮无法产出新 trigger：记录并停止重试，保留历史最优
+                self.recorder.record(f"refine_trigger[{node.name}]", exc, context=feedback[:200])
+                break
             new_trigger = res.get("dialog_trigger") or original
 
             # 验证：用快照同层兄弟构造候选（本节点用 new_trigger，其余用原始 trigger），
@@ -360,8 +370,14 @@ class DialogOptimizer:
             candidates = self._snapshot_siblings(sibling_names, node.name, new_trigger)
 
             async def _check(s: Dict) -> Optional[Dict]:
-                async with self._sem:
-                    chosen = await self.llm.navigate(s["chat_content"], candidates)
+                try:
+                    async with self._sem:
+                        chosen = await self.llm.navigate(s["chat_content"], candidates)
+                except Exception as exc:  # noqa: BLE001
+                    # 单条验证失败：记录并保守计为"未选中本节点"
+                    self.recorder.record(f"trigger_check[{node.name}]", exc,
+                                         context=s.get("call_sno", ""))
+                    chosen = ""
                 if chosen == node.name:
                     return None
                 return {"call_sno": s["call_sno"], "chat_content": s["chat_content"],
@@ -399,17 +415,27 @@ class DialogOptimizer:
         best_bg, best_rate = original, -1.0
         feedback = ""
         for attempt in range(self.config.optimize.max_reflection_retries + 1):
-            async with self._sem:
-                res = await self.llm.refine_background(node, samples, feedback)
+            try:
+                async with self._sem:
+                    res = await self.llm.refine_background(node, samples, feedback)
+            except Exception as exc:  # noqa: BLE001
+                self.recorder.record(f"refine_background[{node.name}]", exc, context=feedback[:200])
+                break
             new_bg = res.get("background") or original
 
             # 验证：沿对话原路径重建背景（本节点用 new_bg，其余用原始 BG）-> 生成 query -> 检索。
             # 并行，受共享 semaphore 限流。
             async def _check(s: Dict) -> Optional[Dict]:
-                backgrounds = self._snapshot_path_backgrounds(s["path_names"], node.name, new_bg)
-                async with self._sem:
-                    query = await self.llm.generate_query(s["chat_content"], backgrounds)
-                    ok = await self.retriever.retrieve(query, s["case_id"])
+                try:
+                    backgrounds = self._snapshot_path_backgrounds(s["path_names"], node.name, new_bg)
+                    async with self._sem:
+                        query = await self.llm.generate_query(s["chat_content"], backgrounds)
+                        ok = await self.retriever.retrieve(query, s["case_id"])
+                except Exception as exc:  # noqa: BLE001
+                    # 单条验证失败：记录并保守计为"未检索到"
+                    self.recorder.record(f"background_check[{node.name}]", exc,
+                                         context=s.get("call_sno", ""))
+                    query, ok = "", False
                 if ok:
                     return None
                 return {"call_sno": s["call_sno"], "query": query,
