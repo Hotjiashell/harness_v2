@@ -31,7 +31,7 @@ import inspect
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # ---------------------------------------------------------------------------
 # 路径与依赖：复用 build/khtree 的 LLM 客户端与数据模型
@@ -47,7 +47,30 @@ from khtree.config_types import LLMSettings  # noqa: E402
 from khtree.llm import LLMClient  # noqa: E402
 from khtree.models import Dialog, Node, Tree  # noqa: E402
 
+try:  # 进度条可选，缺失时降级为无进度条
+    from tqdm import tqdm as _tqdm
+except Exception:  # pragma: no cover
+    _tqdm = None
+
 TOP_KS = [1, 3, 5, 10, 20, 50]
+
+
+async def _gather_with_progress(coros: List, desc: str) -> List:
+    """并发执行协程并显示进度条（按完成顺序推进），返回结果（保持输入顺序）。"""
+    results: List = [None] * len(coros)
+    bar = _tqdm(total=len(coros), desc=desc, file=sys.stderr) if _tqdm else None
+
+    async def _run(idx: int, coro) -> None:
+        try:
+            results[idx] = await coro
+        finally:
+            if bar is not None:
+                bar.update(1)
+
+    await asyncio.gather(*[_run(i, c) for i, c in enumerate(coros)])
+    if bar is not None:
+        bar.close()
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -129,19 +152,18 @@ async def run_navigation(
     llm: LLMClient, tree: Tree, dialogs: List[Dialog], concurrency: int
 ) -> List[Dict[str, Any]]:
     sem = asyncio.Semaphore(max(1, concurrency))
-    results: List[Optional[Dict[str, Any]]] = [None] * len(dialogs)
 
-    async def _one(i: int, d: Dialog) -> None:
+    async def _one(d: Dialog) -> Dict[str, Any]:
         async with sem:
             try:
-                results[i] = await navigate_and_make_query(llm, tree, d)
+                return await navigate_and_make_query(llm, tree, d)
             except Exception as exc:  # noqa: BLE001
                 log(f"导航失败(已跳过) call_sno={d.call_sno}: {exc}")
-                results[i] = {"call_sno": d.call_sno, "case_id": d.case_id,
-                              "chat_content": d.chat_content, "visited": [],
-                              "query": "", "error": str(exc)}
+                return {"call_sno": d.call_sno, "case_id": d.case_id,
+                        "chat_content": d.chat_content, "visited": [],
+                        "query": "", "error": str(exc)}
 
-    await asyncio.gather(*[_one(i, d) for i, d in enumerate(dialogs)])
+    results = await _gather_with_progress([_one(d) for d in dialogs], "导航+生成query")
     return [r for r in results if r is not None]
 
 
@@ -178,7 +200,7 @@ async def run_retrieval(
         return {**rec, "hit_rank": hit_rank,
                 "hit_at": {f"top{k}": (hit_rank is not None and hit_rank <= k) for k in TOP_KS}}
 
-    return await asyncio.gather(*[_one(r) for r in records])
+    return await _gather_with_progress([_one(r) for r in records], "检索")
 
 
 def summarize_recall(retrieved: List[Dict[str, Any]]) -> Dict[str, Any]:
