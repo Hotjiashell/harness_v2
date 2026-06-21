@@ -1,0 +1,576 @@
+[
+  {
+    "call_sno": "000000001",
+    "case_id": "KT00000001",
+    "query": "WeCon 用户：WeCon怎么找回以前的聊天记录？\n客服：您好，是指新版WeCon吗？用户",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000002",
+    "case_id": "KT00000001",
+    "query": "WeCon 用户：新版WeCon历史消息怎么同步回来？\n客服：您好，请问是想把以前的聊天记录",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000003",
+    "case_id": "KT00000001",
+    "query": "WeCon 用户：WeCon重装后以前聊天记录没了，怎么恢复历史消息？\n客服：您好，您使用的",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000004",
+    "case_id": "KT00000002",
+    "query": "WeCon 用户：WeCon里别人发的图片打不开，提示已过期或已被清理，怎么办？\n客服：您好",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000005",
+    "case_id": "KT00000002",
+    "query": "WeCon 用户：聊天里的图片显示已过期，怎么恢复？\n客服：您好，请问是WeCon电脑端里图",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000006",
+    "case_id": "KT00000003",
+    "query": "WeCon 用户：手机上的WeCon收不到新消息提醒，别人发了我很久后才看到\n客服：您好，是",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000007",
+    "case_id": "KT00000003",
+    "query": "WeCon 用户：WeCon在手机后台挂着也不弹消息，是哪里没开？\n客服：您好，请问是安卓手",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000008",
+    "case_id": "KT00000004",
+    "query": "WeCon 用户：WeCon给同事传文件特别慢，有没有办法提速？\n客服：您好，是单聊里发送大",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000009",
+    "case_id": "KT00000004",
+    "query": "WeCon 用户：两台电脑在同一个WiFi下，WeCon传文件还是很慢\n客服：您好，您是想优",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000010",
+    "case_id": "KT00000005",
+    "query": "WeCon 用户：WeCon群聊里3个月前的聊天记录搜不到了，怎么查？\n客服：您好，是想搜索",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000011",
+    "case_id": "KT00000005",
+    "query": "WeCon 用户：群里很久之前的记录在WeCon里查不到，能同步更多历史吗？\n客服：您好，请",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000012",
+    "case_id": "KT00000006",
+    "query": "MeetWe 用户：MeetWe开会时摄像头是黑屏的，别人看不到我\n客服：您好，是进入视频会议",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000013",
+    "case_id": "KT00000006",
+    "query": "MeetWe 用户：MeetWe能识别到摄像头，但视频窗口是黑的，怎么修？\n客服：您好，请问是",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000014",
+    "case_id": "KT00000007",
+    "query": "MeetWe 用户：MeetWe共享屏幕的时候，对方听不到我电脑里的声音\n客服：您好，是共享P",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000015",
+    "case_id": "KT00000007",
+    "query": "MeetWe 用户：我在MeetWe里放演示视频，共享画面正常，但没有声音\n客服：您好，请问是",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000016",
+    "case_id": "KT00000008",
+    "query": "MeetWe 用户：MeetWe一进会议就提示音频设备被独占，加入不了语音\n客服：您好，是会议",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000017",
+    "case_id": "KT00000008",
+    "query": "MeetWe 用户：MeetWe报音频设备被独占，麦克风和扬声器都用不了\n客服：您好，请问是加",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000018",
+    "case_id": "KT00000009",
+    "query": "MeetWe 用户：我们海外同事用MeetWe开会延迟特别高，画面也卡\n客服：您好，是跨国入会",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000019",
+    "case_id": "KT00000009",
+    "query": "MeetWe 用户：人在国外开MeetWe会议很卡，有没有专门的网络设置？\n客服：您好，请问是",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000020",
+    "case_id": "KT00000010",
+    "query": "Outlook 用户：Outlook里的企业邮件插件突然加载不出来了\n客服：您好，是Outloo",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000021",
+    "case_id": "KT00000010",
+    "query": "Outlook 用户：Outlook插件被禁用了，邮件辅助功能打不开怎么办？\n客服：您好，请问是",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000022",
+    "case_id": "KT00000011",
+    "query": "Outlook 用户：Outlook同步不到公司的公共日历会议，别人建的行程我看不到\n客服：您好",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000023",
+    "case_id": "KT00000011",
+    "query": "Outlook 用户：公司共享日历在Outlook里不更新，会议日程缺失\n客服：您好，请问是Ou",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000024",
+    "case_id": "KT00000012",
+    "query": "Outlook 用户：Outlook发邮件一直卡在发件箱，发不出去\n客服：您好，是邮件停留在“发",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000025",
+    "case_id": "KT00000012",
+    "query": "Outlook 用户：我在Outlook发了一封邮件后一直转圈，邮件不发送\n客服：您好，请问是邮",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000026",
+    "case_id": "KT00000013",
+    "query": "Outlook 用户：Outlook老是弹窗让我重新输入密码，特别频繁\n客服：您好，是一直反复出",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000027",
+    "case_id": "KT00000013",
+    "query": "Outlook 用户：Outlook每隔一会儿就提示输入凭据，密码明明没错\n客服：您好，请问是O",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000028",
+    "case_id": "KT00000014",
+    "query": "Git 用户：Git推代码时报100MB大小限制，怎么处理？\n客服：您好，是远程仓库拒绝",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000029",
+    "case_id": "KT00000014",
+    "query": "Git 用户：git push失败，说大文件超限不能提交\n客服：您好，请问是单个文件超过",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000030",
+    "case_id": "KT00000015",
+    "query": "Git 用户：Git合并代码时报fatal: refusing to merge unr",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000031",
+    "case_id": "KT00000015",
+    "query": "Git 用户：我拉代码的时候提示unrelated histories，没法合并\n客服：",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000032",
+    "case_id": "KT00000016",
+    "query": "Git 用户：我只改了文件名大小写，Git就是识别不到变更\n客服：您好，是本地改了大小写",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000033",
+    "case_id": "KT00000016",
+    "query": "Git 用户：把文件名从test改成Test之后，git status没反应怎么办？\n客",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000034",
+    "case_id": "KT00000017",
+    "query": "Git 用户：Git拉代码提示Permission denied publickey，连",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000035",
+    "case_id": "KT00000017",
+    "query": "Git 用户：执行git pull报publickey错误，应该怎么排查？\n客服：您好，",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000036",
+    "case_id": "KT00000018",
+    "query": "OA 用户：OA系统导出Excel没反应，是不是坏了？\n客服：您好，是点击导出报表后浏",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000037",
+    "case_id": "KT00000018",
+    "query": "OA 用户：在OA里导出Excel失败，页面也没报错\n客服：您好，请问是浏览器里导出报",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000038",
+    "case_id": "KT00000019",
+    "query": "网盘 用户：企业网盘提示文件同步冲突，目录里多了conflict文件，怎么处理？\n客服",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000039",
+    "case_id": "KT00000019",
+    "query": "网盘 用户：网盘同步后出现两个版本，一个文件名后面带conflict\n客服：您好，请问",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000040",
+    "case_id": "KT00000020",
+    "query": "VPN 用户：远程VPN连接时提示证书过期，登录不上去\n客服：您好，是VPN客户端报“证",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  },
+  {
+    "call_sno": "000000041",
+    "case_id": "KT00000020",
+    "query": "VPN 用户：公司VPN突然连不上，提示证书失效或过期怎么办？\n客服：您好，请问是远程V",
+    "hit_rank": null,
+    "hit_at": {
+      "top1": false,
+      "top3": false,
+      "top5": false,
+      "top10": false,
+      "top20": false,
+      "top50": false
+    }
+  }
+]

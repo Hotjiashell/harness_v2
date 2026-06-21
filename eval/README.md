@@ -61,3 +61,26 @@ python eval/eval_recall.py --provider mock
 
 召回率同时打印到终端。命中排名 `hit_rank` 为目标案例在检索结果中的 1-based 名次，
 `null` 表示 top-50 内未命中。
+
+---
+
+## Baseline 对照（`eval_baseline.py`）
+
+不走知识树导航，**直接用对话内容生成 query**（空背景）再检索，作为对照组——
+衡量「知识树导航 + 节点背景知识」相比「直接拿对话生成 query」带来多少召回率增益。
+
+```bash
+# 全流程：直接生成 query + 检索 + 召回率
+python eval/eval_baseline.py --dialog data/dialog/dialog.json --out-dir eval/baseline_output
+
+# 只生成 query / 从已有 query 只跑检索
+python eval/eval_baseline.py --stage query
+python eval/eval_baseline.py --stage retrieve --query-file eval/baseline_output/queries.json
+```
+
+参数与 `eval_recall.py` 基本一致（`--stage` / `--no-thinking` / `--provider` / `--concurrency` 等），
+仅**不需要 `--tree`**。输出 `queries.json` / `retrieval_detail.json` / `recall_result.json`
+（`recall_result.json` 的 `config.mode` 标记为 baseline）。
+
+把 `eval_recall.py`（导航版）与 `eval_baseline.py`（无导航）在同一份对话上各跑一次，
+对比两者的 top-k 召回率即可看出导航与节点背景知识的增益。
