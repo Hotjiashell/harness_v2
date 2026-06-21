@@ -68,6 +68,17 @@ def write_json(path: Path, data: Any) -> None:
     log(f"已写出：{p}")
 
 
+def init_dialog_trigger(node: Node) -> int:
+    """dialog_trigger 为空的节点用 case_trigger 兜底填充（不覆盖已有值）。返回填充节点数。"""
+    count = 0
+    for c in node.children:
+        if not (c.dialog_trigger or "").strip() and (c.case_trigger or "").strip():
+            c.dialog_trigger = c.case_trigger
+            count += 1
+        count += init_dialog_trigger(c)
+    return count
+
+
 # ---------------------------------------------------------------------------
 # 加载根目录 retrieve.py::retrieve_case（动态加载，避免与包名冲突）
 # ---------------------------------------------------------------------------
@@ -195,7 +206,10 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.stage in ("full", "query"):
         dialogs = Dialog.load_all(read_json(Path(args.dialog)))
         tree = Tree.from_dict(read_json(Path(args.tree)))
-        log(f"加载对话 {len(dialogs)} 条；知识树：{args.tree}")
+        # dialog_trigger 为空的节点用 case_trigger 兜底填充（导航只看 dialog_trigger）
+        n_filled = init_dialog_trigger(tree.root)
+        log(f"加载对话 {len(dialogs)} 条；知识树：{args.tree}"
+            + (f"（dialog_trigger 兜底填充 {n_filled} 个节点）" if n_filled else ""))
         llm = LLMClient(LLMSettings(
             provider=args.provider, base_url=args.base_url, api_key=args.api_key,
             model=args.model, concurrency=args.concurrency,
