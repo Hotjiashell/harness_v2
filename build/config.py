@@ -59,6 +59,7 @@ LLM = LLMSettings(
     temperature=0.1,
     max_retries=3,
     max_tokens=2048,
+    enable_thinking=True,   # 模型默认思考模式；关闭则传 enable_thinking=False（仅 openai provider）
 )
 
 

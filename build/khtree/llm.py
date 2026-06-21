@@ -74,6 +74,10 @@ class LLMClient:
     # -- 底层 chat（带重试） ------------------------------------------------
     async def _chat(self, messages: List[Dict[str, str]]) -> str:
         assert self._client is not None
+        # 思考模式：模型默认开启；关闭时通过 extra_body 透传 enable_thinking=False
+        extra_body = None
+        if not getattr(self.settings, "enable_thinking", True):
+            extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
         last_exc: Optional[BaseException] = None
         for attempt in range(self.settings.max_retries + 1):
             try:
@@ -82,6 +86,7 @@ class LLMClient:
                     messages=messages,
                     temperature=self.settings.temperature,
                     max_tokens=self.settings.max_tokens,
+                    extra_body=extra_body,
                 )
                 return resp.choices[0].message.content or ""
             except Exception as exc:  # noqa: BLE001

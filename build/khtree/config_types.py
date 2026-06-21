@@ -46,6 +46,8 @@ class LLMSettings:
     temperature: float = 0.1
     max_retries: int = 3
     max_tokens: int = 2048
+    # 思考模式：模型默认开启思考；置 False 则通过 extra_body 关闭（仅 openai provider 生效）
+    enable_thinking: bool = True
 
 
 @dataclass
