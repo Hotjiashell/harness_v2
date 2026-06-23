@@ -337,7 +337,7 @@ class DialogOptimizer:
         async def _one(d: Dialog) -> NavResult:
             res = NavResult(d)
             # 1. 导航（同时记录每层候选）
-            backgrounds: List[str] = []
+            backgrounds: List[Dict[str, str]] = []
             node = self.tree.root
             while node.children:
                 candidates = [
@@ -363,7 +363,7 @@ class DialogOptimizer:
                     "dead_end": False,
                 })
                 if child.background:
-                    backgrounds.append(child.background)
+                    backgrounds.append({"name": child.name, "background": child.background})
                 node = child
 
             # 2. 生成 query + 检索
@@ -660,13 +660,14 @@ class DialogOptimizer:
 
     def _snapshot_path_backgrounds(
         self, path_names: List[str], target: str, target_bg: str
-    ) -> List[str]:
-        """用优化前快照重建路径背景：目标节点用 target_bg，其余用原始 background。"""
-        backgrounds: List[str] = []
+    ) -> List[Dict[str, str]]:
+        """用优化前快照重建路径背景：目标节点用 target_bg，其余用原始 background。
+        返回 [{"name", "background"}]，供 generate_query 渲染「节点名：背景知识」。"""
+        backgrounds: List[Dict[str, str]] = []
         for name in path_names:
             bg = target_bg if name == target else self._orig_background.get(name, "")
             if bg:
-                backgrounds.append(bg)
+                backgrounds.append({"name": name, "background": bg})
         return backgrounds
 
     # =======================================================================
@@ -684,7 +685,7 @@ class DialogOptimizer:
     ) -> List[bool]:
         """只算成功与否，不做归因，用于召回率评估。"""
         async def _one(d: Dialog) -> bool:
-            backgrounds: List[str] = []
+            backgrounds: List[Dict[str, str]] = []
             node = self.tree.root
             while node.children:
                 chosen = await self.llm.navigate(d.chat_content, node.children)
@@ -694,7 +695,7 @@ class DialogOptimizer:
                 if child is None:
                     break
                 if child.background:
-                    backgrounds.append(child.background)
+                    backgrounds.append({"name": child.name, "background": child.background})
                 node = child
             query = await self.llm.generate_query(d.chat_content, backgrounds)
             return await self.retriever.retrieve(query, d.case_id)

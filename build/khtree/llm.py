@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from . import prompts
 from .config_types import LLMSettings
@@ -47,6 +47,15 @@ def _detect_entity(text: str) -> Optional[str]:
 
 def _entity_background(entity: str) -> str:
     return f"{entity} 相关问题的领域背景与常见处理经验。"
+
+
+def _analysis_before_json(raw: str) -> str:
+    """提取模型输出中 ```json``` 代码块之前的分析文本（无代码块则返回全文，去首尾空白）。"""
+    if not raw:
+        return ""
+    m = re.search(r"```(?:json)?", raw)
+    text = raw[: m.start()] if m else raw
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -271,13 +280,26 @@ class LLMClient:
                 return c.name
         return ""
 
-    async def generate_query(self, chat_content: str, backgrounds: List[str]) -> str:
+    async def generate_query(self, chat_content: str, backgrounds: List[Dict]) -> str:
+        """backgrounds：导航经过的节点 [{"name", "background"}]，供生成检索 query。"""
+        query, _ = await self.generate_query_ex(chat_content, backgrounds)
+        return query
+
+    async def generate_query_ex(
+        self, chat_content: str, backgrounds: List[Dict]
+    ) -> Tuple[str, str]:
+        """同 generate_query，但同时返回模型的分析过程（```json``` 代码块之前的文本）。
+
+        返回 (query, analysis)。mock provider 无分析过程，analysis 为空串。
+        """
         if self.provider == "mock":
             entity = _detect_entity(chat_content) or ""
-            return f"{entity} {chat_content[:40]}".strip()
+            return f"{entity} {chat_content[:40]}".strip(), ""
         msgs = prompts.generate_query_messages(chat_content, backgrounds)
-        data = extract_json(await self._chat(msgs))
-        return str(data.get("query", chat_content[:60]))
+        raw = await self._chat(msgs)
+        data = extract_json(raw)
+        query = str(data.get("query", chat_content[:60]))
+        return query, _analysis_before_json(raw)
 
     async def attribute_error_oneshot(
         self, chat_content: str, path_nodes: List[Dict], levels: List[Dict],

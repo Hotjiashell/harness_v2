@@ -125,7 +125,7 @@ async def navigate_and_make_query(
 ) -> Dict[str, Any]:
     """对单条对话逐层导航并生成 query，记录经过的节点与最终 query。"""
     visited: List[str] = []
-    backgrounds: List[str] = []
+    backgrounds: List[Dict[str, str]] = []
     node = tree.root
     while node.children:
         chosen = await llm.navigate(dialog.chat_content, node.children)
@@ -136,14 +136,15 @@ async def navigate_and_make_query(
             break
         visited.append(child.name)
         if child.background:
-            backgrounds.append(child.background)
+            backgrounds.append({"name": child.name, "background": child.background})
         node = child
-    query = await llm.generate_query(dialog.chat_content, backgrounds)
+    query, analysis = await llm.generate_query_ex(dialog.chat_content, backgrounds)
     return {
         "call_sno": dialog.call_sno,
         "case_id": dialog.case_id,
         "chat_content": dialog.chat_content,
         "visited": visited,
+        "analysis": analysis,
         "query": query,
     }
 

@@ -56,13 +56,13 @@ async def run_baseline_query(
         async with sem:
             try:
                 # 不导航、无节点背景：query 仅来自对话内容
-                query = await llm.generate_query(d.chat_content, [])
+                query, analysis = await llm.generate_query_ex(d.chat_content, [])
             except Exception as exc:  # noqa: BLE001
                 log(f"生成 query 失败(已跳过) call_sno={d.call_sno}: {exc}")
                 return {"call_sno": d.call_sno, "case_id": d.case_id,
                         "chat_content": d.chat_content, "query": "", "error": str(exc)}
             return {"call_sno": d.call_sno, "case_id": d.case_id,
-                    "chat_content": d.chat_content, "query": query}
+                    "chat_content": d.chat_content, "analysis": analysis, "query": query}
 
     results = await _gather_with_progress([_one(d) for d in dialogs], "baseline生成query")
     return [r for r in results if r is not None]

@@ -177,16 +177,22 @@ def navigate_messages(chat_content: str, children: List[Node]) -> List[Dict[str,
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def generate_query_messages(chat_content: str, backgrounds: List[str]) -> List[Dict[str, str]]:
+def generate_query_messages(chat_content: str, backgrounds: List[Dict]) -> List[Dict[str, str]]:
     system = (
-        "你是检索 query 生成助手。结合对话内容和导航过程中收集到的背景知识，"
-        "生成一个用于检索相关案例的检索 query。"
+        "你是企业内部智能客服。你需要结合对话内容和收集到的背景知识，来充分理解用户问题"
+        "并生成一个用于检索相关案例的检索 query。"
     )
-    bg = "\n".join(f"- {b}" for b in backgrounds if b)
+    # backgrounds 形如 [{"name": 节点名, "background": 背景知识}]，渲染成「节点名：背景知识」
+    bg = "\n".join(
+        f"- {b.get('name', '')}：{b.get('background', '')}"
+        for b in backgrounds if b and b.get("background")
+    )
     user = (
         f"对话内容：\n{chat_content}\n\n"
-        f"导航收集到的背景知识：\n{bg}\n\n"
-        '请输出 JSON：{"query":"<检索query>"}'
+        f"背景知识（按导航经过的节点列出）：\n{bg}\n\n"
+        '请先进行分析，哪些背景知识是和用户问题相关的，哪些不相关，你应该有分辨地利用背景知识。背景知识仅作为辅助，不需要严格遵守。'
+        '作为检索的query中，关键词是很重要的，当用户提到某种陌生的企业内部用语，你不应该忽略'
+        '然后将你的结果用```json```代码块输出：{"query":"<检索query>"}'
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
