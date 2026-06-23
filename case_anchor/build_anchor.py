@@ -92,7 +92,7 @@ def navigate_case_messages(case: Case, children: List[Node], nav_by: str) -> Lis
     user = (
         f"案例：\n标题：{case.case_name}\n内容：{case.text}\n\n"
         f"候选类别：\n{json.dumps(items, ensure_ascii=False, indent=2)}\n\n"
-        '请输出 JSON：{"name":"<最匹配类别name，没有则空字符串>","reason":"..."}'
+        '请输出 JSON：{"name":"<最匹配类别name，至少选择最贴近的一个>","reason":"..."}'
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -104,9 +104,8 @@ def anchor_messages(case: Case, backgrounds: List[Dict]) -> List[Dict[str, str]]
     使 anchor 关键词与对话生成的 query 用词同体系，从而更易互相命中。
     """
     system = (
-        "你是企业内部检索优化助手。下面给出一条案例，以及它在知识体系中归类时"
-        "沿途积累的背景知识。请为该案例提炼一组**检索关键词**作为 anchor，"
-        "目的是让用户咨询相关问题时生成的检索 query 更容易命中这条案例。"
+        "你是企业内部智能客服。你需要结合案例内容和收集到的背景知识，来充分理解案例"
+        "并生成一系列**检索关键词**作为 anchor，anchor用来丰富案例，帮助其更容易被检索命中"
     )
     bg = "\n".join(
         f"- {b.get('name', '')}：{b.get('background', '')}"
@@ -114,13 +113,12 @@ def anchor_messages(case: Case, backgrounds: List[Dict]) -> List[Dict[str, str]]
     )
     user = (
         f"案例：\n标题：{case.case_name}\n内容：{case.text}\n\n"
-        f"背景知识（按归类经过的节点列出）：\n{bg}\n\n"
-        "请先分析：该案例的核心问题是什么、用户可能用哪些术语/关键词检索它，"
-        "结合背景知识补充该领域的专有名词、同义说法、关键实体。背景知识仅作辅助，不必强凑。\n"
-        "anchor 必须是**一行用空格隔开的关键词**（不是句子、不是模拟用户问法），"
-        "覆盖案例的核心实体、术语与典型检索词。\n"
-        '请先给出分析，最后用 ```json``` 代码块输出：{"anchor":"<空格隔开的关键词>"}'
-    )
+        f"背景知识：\n{bg}\n\n"
+        '案例内容反应了某个问题的解决方案，生成anchor时要先分析案例，结合背景知识理解该案例涉及的内容。'
+        '如果案例为英文，生成的anchor也应为英文。'
+        '请先进行分析，哪些背景知识是和案例内容相关的，哪些不相关，你应该有分辨地利用背景知识。'
+        "anchor中，关键词是很重要的，主要是背景知识中出现的与案例相关的术语、软件名等"
+        '然后将你的结果用```json```代码块输出：{"anchor":"<anchor>"}'    )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
