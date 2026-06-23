@@ -1,4 +1,69 @@
+# =====================
+# Project specific
+# =====================
 construct/requirement.md
 data/
 output/
-/eval/output*/**
+eval/output*/
+eval/output*/**
+eval/**/output*/
+
+# =====================
+# Python
+# =====================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 虚拟环境
+venv/
+.env/
+.venv/
+
+# =====================
+# Jupyter Notebook
+# =====================
+.ipynb_checkpoints/
+
+# =====================
+# Logs & runtime
+# =====================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# =====================
+# OS generated files
+# =====================
+.DS_Store
+Thumbs.db
+
+# =====================
+# IDE / Editor
+# =====================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =====================
+# Model / ML projects (常见)
+# =====================
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+runs/
+wandb/
+.mlflow/
