@@ -49,13 +49,33 @@ def _entity_background(entity: str) -> str:
     return f"{entity} 相关问题的领域背景与常见处理经验。"
 
 
-def _analysis_before_json(raw: str) -> str:
-    """提取模型输出中 ```json``` 代码块之前的分析文本（无代码块则返回全文，去首尾空白）。"""
+def _extract_analysis(raw: str) -> str:
+    """提取模型输出里的分析过程。
+
+    优先取 ```analysis ... ``` 代码块内的内容；模型若未用该围栏，
+    则回退为「```json``` 代码块之前的文本」；都没有则返回全文。均去首尾空白。
+    """
     if not raw:
         return ""
-    m = re.search(r"```(?:json)?", raw)
-    text = raw[: m.start()] if m else raw
+    m = re.search(
+        r"```[ \t]*(?:analysis|anlysis)[ \t]*(?:\r?\n)?(.*?)```",
+        raw,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip()
+
+    m = re.search(r"<analysis>\s*(.*?)\s*</analysis>", raw, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    j = re.search(r"```[ \t]*json\b", raw, re.IGNORECASE)
+    text = raw[: j.start()] if j else raw
     return text.strip()
+
+
+# 兼容旧调用点和外部脚本；新代码优先使用 _extract_analysis。
+_analysis_before_json = _extract_analysis
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +308,7 @@ class LLMClient:
     async def generate_query_ex(
         self, chat_content: str, backgrounds: List[Dict]
     ) -> Tuple[str, str]:
-        """同 generate_query，但同时返回模型的分析过程（```json``` 代码块之前的文本）。
+        """同 generate_query，但同时返回模型的分析过程。
 
         返回 (query, analysis)。mock provider 无分析过程，analysis 为空串。
         """
@@ -299,7 +319,7 @@ class LLMClient:
         raw = await self._chat(msgs)
         data = extract_json(raw)
         query = str(data.get("query", chat_content[:60]))
-        return query, _analysis_before_json(raw)
+        return query, _extract_analysis(raw)
 
     async def attribute_error_oneshot(
         self, chat_content: str, path_nodes: List[Dict], levels: List[Dict],

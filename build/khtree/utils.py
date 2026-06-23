@@ -111,24 +111,53 @@ def extract_json(text: str) -> Any:
     if text is None:
         raise ValueError("empty text")
     text = text.strip()
-    # 去掉 ```json ... ``` 代码块围栏
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
+
+    decoder = json.JSONDecoder()
+
+    def _loads_candidate(candidate: str) -> Any:
+        candidate = candidate.strip()
+        if not candidate:
+            raise ValueError("empty candidate")
+        return json.loads(candidate)
+
+    # 优先解析显式 ```json ... ``` 代码块。不要把 ```analysis ... ```
+    # 当作 JSON 块，否则新提示词的双代码块输出会被误解析。
+    fence_re = re.compile(
+        r"```[ \t]*(?P<label>[A-Za-z0-9_-]+)?[ \t]*(?:\r?\n)?(?P<body>.*?)```",
+        re.DOTALL,
+    )
+    fences = list(fence_re.finditer(text))
+    for fence in fences:
+        if (fence.group("label") or "").lower() == "json":
+            try:
+                return _loads_candidate(fence.group("body"))
+            except Exception:
+                continue
+
+    # 兼容无语言标记的代码块：只有块内容本身可解析为 JSON 时才采用。
+    for fence in fences:
+        if fence.group("label"):
+            continue
+        try:
+            return _loads_candidate(fence.group("body"))
+        except Exception:
+            continue
+
     try:
         return json.loads(text)
     except Exception:
         pass
-    # 退而求其次：寻找第一个 { 或 [ 与最后一个 } 或 ]
-    for open_ch, close_ch in (("{", "}"), ("[", "]")):
-        start = text.find(open_ch)
-        end = text.rfind(close_ch)
-        if start != -1 and end != -1 and end > start:
-            snippet = text[start : end + 1]
-            try:
-                return json.loads(snippet)
-            except Exception:
-                continue
+
+    # 退而求其次：从正文中寻找任意可被 JSONDecoder 识别的对象/数组。
+    # raw_decode 允许 JSON 后面还有解释文本，比“第一个 { 到最后一个 }”更稳。
+    for i, ch in enumerate(text):
+        if ch not in "{[":
+            continue
+        try:
+            obj, _end = decoder.raw_decode(text[i:])
+            return obj
+        except Exception:
+            continue
     raise ValueError(f"无法从输出中解析 JSON: {text[:200]!r}")
 
 

@@ -42,7 +42,7 @@ for p in (str(BUILD_DIR), str(ROOT_DIR)):
         sys.path.insert(0, p)
 
 from khtree.config_types import LLMSettings  # noqa: E402
-from khtree.llm import LLMClient, _analysis_before_json, _detect_entity  # noqa: E402
+from khtree.llm import LLMClient, _detect_entity, _extract_analysis  # noqa: E402
 from khtree.models import Case, Node, Tree  # noqa: E402
 from khtree.utils import extract_json  # noqa: E402
 
@@ -114,11 +114,13 @@ def anchor_messages(case: Case, backgrounds: List[Dict]) -> List[Dict[str, str]]
     user = (
         f"案例：\n标题：{case.case_name}\n内容：{case.text}\n\n"
         f"背景知识：\n{bg}\n\n"
-        '案例内容反应了某个问题的解决方案，生成anchor时要先分析案例，结合背景知识理解该案例涉及的内容。'
+        '案例内容反应了某个问题的解决方案。'
         '如果案例为英文，生成的anchor也应为英文。'
-        '请先进行分析，哪些背景知识是和案例内容相关的，哪些不相关，你应该有分辨地利用背景知识。'
-        "anchor中，关键词是很重要的，主要是背景知识中出现的与案例相关的术语、软件名等"
-        '然后将你的结果用```json```代码块输出：{"anchor":"<anchor>"}'    )
+        "anchor中，关键词是很重要的，主要是背景知识中出现的与案例相关的术语、软件名等。anchor应该来源于背景知识，而不是从案例中抽词。"
+        '请判断哪些背景知识是和案例内容相关的，哪些不相关，你应该有分辨地利用背景知识。'
+        '输出结果前先一步步分析，将你的分析用```analysis```包裹，将你的结果用```json```代码块包裹：'
+        '```analysis\n<分析过程>\n```\n```json\n{"anchor":"<anchor>"}\n```'
+    )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
@@ -190,7 +192,7 @@ async def gen_anchor(llm: LLMClient, case: Case, backgrounds: List[Dict]) -> tup
     raw = await llm._chat(msgs)
     data = extract_json(raw)
     anchor = str(data.get("anchor", "")).strip()
-    return anchor, _analysis_before_json(raw)
+    return anchor, _extract_analysis(raw)
 
 
 # ---------------------------------------------------------------------------
