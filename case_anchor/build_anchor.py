@@ -116,7 +116,7 @@ def anchor_messages(case: Case, backgrounds: List[Dict]) -> List[Dict[str, str]]
         f"背景知识：\n{bg}\n\n"
         '案例内容反应了某个问题的解决方案。'
         '如果案例为英文，生成的anchor也应为英文。'
-        "anchor中，关键词是很重要的，主要是背景知识中出现的与案例相关的术语、软件名等。anchor应该来源于背景知识，而不是从案例中抽词。"
+        "anchor中，关键词是很重要的，主要是背景知识中出现的与案例相关的术语、软件名等。anchor应该主要来源于背景知识。"
         '请判断哪些背景知识是和案例内容相关的，哪些不相关，你应该有分辨地利用背景知识。'
         '输出结果前先一步步分析，将你的分析用```analysis```包裹，将你的结果用```json```代码块包裹：'
         '```analysis\n<分析过程>\n```\n```json\n{"anchor":"<anchor>"}\n```'
