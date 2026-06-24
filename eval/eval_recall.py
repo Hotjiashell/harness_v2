@@ -184,7 +184,8 @@ def summarize_top_cases(results: List[Dict[str, Any]], top_k: int = 5) -> List[D
 
 
 async def run_retrieval(
-    retrieve_case, records: List[Dict[str, Any]], concurrency: int
+    retrieve_case, records: List[Dict[str, Any]], concurrency: int,
+    strategy: str = "lexical&semantic",
 ) -> List[Dict[str, Any]]:
     """对每条记录的 query 调 retrieve_case 取 top-max(TOP_KS)，记录命中目标案例的最小排名。"""
     max_k = max(TOP_KS)
@@ -199,10 +200,12 @@ async def run_retrieval(
         try:
             async with sem:
                 if is_async:
-                    res = await retrieve_case(query, top_k=max_k)
+                    res = await retrieve_case(query, top_k=max_k, strategy=strategy)
                 else:
                     # 同步函数：丢线程池执行，避免阻塞事件循环、实现真并行
-                    res = await asyncio.to_thread(retrieve_case, query, max_k)
+                    res = await asyncio.to_thread(
+                        retrieve_case, query, top_k=max_k, strategy=strategy
+                    )
             res = res or []
             retrieved_top5 = summarize_top_cases(res, 5)
             for idx, item in enumerate(res):
@@ -273,7 +276,10 @@ async def main_async(args: argparse.Namespace) -> int:
 
     # 检索 + 召回率
     retrieve_case = load_retrieve_case()
-    retrieved = await run_retrieval(retrieve_case, records, args.concurrency)
+    log(f"检索策略：{args.strategy}")
+    retrieved = await run_retrieval(
+        retrieve_case, records, args.concurrency, strategy=args.strategy
+    )
     summary = summarize_recall(retrieved)
 
     write_json(out_dir / "retrieval_detail.json", retrieved)
@@ -282,6 +288,7 @@ async def main_async(args: argparse.Namespace) -> int:
             "stage": args.stage, "provider": args.provider, "model": args.model,
             "enable_thinking": enable_thinking,
             "dialog": args.dialog, "tree": args.tree,
+            "strategy": args.strategy,
         },
         "summary": summary,
     })
@@ -307,6 +314,8 @@ def parse_args() -> argparse.Namespace:
                    help="知识树文件")
     p.add_argument("--query-file", default=None,
                    help="query 中间文件路径（retrieve 阶段从此读取；其他阶段写入此处）")
+    p.add_argument("--strategy", default="lexical&semantic",
+                   help="传给 retrieve.py::retrieve_case 的检索策略")
     # 输出
     p.add_argument("--out-dir", default=str(EVAL_DIR / "output"), help="输出目录")
     p.add_argument("--result-file", default=None, help="召回率结果文件路径")

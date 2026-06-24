@@ -103,7 +103,10 @@ async def main_async(args: argparse.Namespace) -> int:
         log(f"从 query 文件读取 {len(records)} 条：{query_file}")
 
     retrieve_case = load_retrieve_case()
-    retrieved = await run_retrieval(retrieve_case, records, args.concurrency)
+    log(f"检索策略：{args.strategy}")
+    retrieved = await run_retrieval(
+        retrieve_case, records, args.concurrency, strategy=args.strategy
+    )
     summary = summarize_recall(retrieved)
 
     write_json(out_dir / "retrieval_detail.json", retrieved)
@@ -112,6 +115,7 @@ async def main_async(args: argparse.Namespace) -> int:
             "mode": "baseline（无导航，对话直生 query）",
             "stage": args.stage, "provider": args.provider, "model": args.model,
             "enable_thinking": enable_thinking, "dialog": args.dialog,
+            "strategy": args.strategy,
         },
         "summary": summary,
     })
@@ -133,6 +137,8 @@ def parse_args() -> argparse.Namespace:
                    help="对话数据文件")
     p.add_argument("--query-file", default=None,
                    help="query 中间文件路径（retrieve 阶段读取，其他阶段写入）")
+    p.add_argument("--strategy", default="lexical&semantic",
+                   help="传给 retrieve.py::retrieve_case 的检索策略")
     p.add_argument("--out-dir", default=str(EVAL_DIR / "baseline_output"), help="输出目录")
     p.add_argument("--result-file", default=None, help="召回率结果文件路径")
     p.add_argument("--provider", default="openai", help="LLM provider：openai 或 mock")
