@@ -5,8 +5,8 @@
 用于定位「方案1 相比 方案2 多召回了哪些样本」（如导航版 vs baseline）。
 
 输入：两个目录，各自包含 retrieval_detail.json（由 eval_recall.py / eval_baseline.py 产出）。
-输出：一个 JSON 文件；每条差异样本包含对话记录、GT 案例信息，以及两个 query
-各自实际召回的 top5 案例（caseID + case_name）。
+输出：一个 JSON 文件；每条差异样本包含对话记录、GT 案例信息、可用的 visited
+导航路径，以及两个 query 各自实际召回的 top5 案例（caseID + case_name）。
 
 用法：
   python eval/compare_recall.py --dir1 eval/output --dir2 eval/baseline_output \
@@ -108,7 +108,7 @@ def build_item(
     dialog = dialog_context.get(sno, {})
     case_id = str(r1.get("case_id") or r2.get("case_id") or dialog.get("case_id", ""))
     case = case_context.get(case_id, {})
-    return {
+    item = {
         "call_sno": sno,
         "case_id": case_id,
         "chat_content": r1.get("chat_content") or r2.get("chat_content")
@@ -122,6 +122,11 @@ def build_item(
         "dir1_retrieved_top5": r1.get("retrieved_top5", []),
         "dir2_retrieved_top5": r2.get("retrieved_top5", []),
     }
+    if "visited" in r1:
+        item["dir1_visited"] = r1.get("visited")
+    if "visited" in r2:
+        item["dir2_visited"] = r2.get("visited")
+    return item
 
 
 def main() -> int:
