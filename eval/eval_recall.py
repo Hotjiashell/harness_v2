@@ -171,6 +171,18 @@ async def run_navigation(
 # ---------------------------------------------------------------------------
 # 检索 + 召回率
 # ---------------------------------------------------------------------------
+def summarize_top_cases(results: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+    """保留检索实际返回的 top-k 案例 ID 与标题，便于后续对比排查。"""
+    out: List[Dict[str, Any]] = []
+    for idx, item in enumerate((results or [])[:top_k], 1):
+        out.append({
+            "rank": idx,
+            "caseID": str(item.get("caseID") or item.get("case_id") or ""),
+            "case_name": str(item.get("case_name") or item.get("title") or item.get("name") or ""),
+        })
+    return out
+
+
 async def run_retrieval(
     retrieve_case, records: List[Dict[str, Any]], concurrency: int
 ) -> List[Dict[str, Any]]:
@@ -183,6 +195,7 @@ async def run_retrieval(
         query = rec.get("query", "")
         case_id = rec.get("case_id", "")
         hit_rank = None
+        retrieved_top5: List[Dict[str, Any]] = []
         try:
             async with sem:
                 if is_async:
@@ -191,6 +204,7 @@ async def run_retrieval(
                     # 同步函数：丢线程池执行，避免阻塞事件循环、实现真并行
                     res = await asyncio.to_thread(retrieve_case, query, max_k)
             res = res or []
+            retrieved_top5 = summarize_top_cases(res, 5)
             for idx, item in enumerate(res):
                 if str(item.get("caseID")) == str(case_id):
                     hit_rank = idx + 1  # 1-based 排名
@@ -198,7 +212,7 @@ async def run_retrieval(
         except Exception as exc:  # noqa: BLE001
             log(f"检索失败(已跳过) call_sno={rec.get('call_sno')}: {exc}")
             rec = {**rec, "retrieve_error": str(exc)}
-        return {**rec, "hit_rank": hit_rank,
+        return {**rec, "hit_rank": hit_rank, "retrieved_top5": retrieved_top5,
                 "hit_at": {f"top{k}": (hit_rank is not None and hit_rank <= k) for k in TOP_KS}}
 
     return await _gather_with_progress([_one(r) for r in records], "检索")
