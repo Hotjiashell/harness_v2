@@ -21,7 +21,7 @@ def retrieve_case(query: str, top_k: int = 20, strategy: str = "lexical&semantic
             "caseID": "case123",  # 案例ID
             "case_name": "案例标题",  # 案例标题
             "text": "案例内容",  # 案例内容
-            "score": 0.95,  # 与查询的相关度得分，范围为0到1
+            "score": 0.95,  # 与查询的相关度得分
             "metadata": {  # 其他相关的元信息，可以根据需要添加
                 ...
             }
