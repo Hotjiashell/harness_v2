@@ -35,12 +35,19 @@ def log(msg: str) -> None:
 
 
 def load_detail(d: Path) -> Dict[str, Dict[str, Any]]:
-    """读取目录下 retrieval_detail.json，返回 {call_sno: record}。"""
-    path = d / "retrieval_detail.json"
-    if not path.exists():
-        raise FileNotFoundError(f"找不到 {path}")
-    records = json.loads(path.read_text(encoding="utf-8"))
-    return {str(r.get("call_sno")): r for r in records}
+    """读取目录下的明细文件，返回 {call_sno: record}。
+
+    兼容两种产物：
+      - eval_recall.py / eval_baseline.py 的 retrieval_detail.json
+      - query_mix 融合脚本的 fusion_detail.json
+    """
+    for name in ("retrieval_detail.json", "fusion_detail.json"):
+        path = d / name
+        if path.exists():
+            records = json.loads(path.read_text(encoding="utf-8"))
+            return {str(r.get("call_sno")): r for r in records}
+    raise FileNotFoundError(
+        f"目录 {d} 下找不到 retrieval_detail.json 或 fusion_detail.json")
 
 
 def load_dialog_context(path: Path) -> Dict[str, Dict[str, str]]:
@@ -97,6 +104,26 @@ def hit_at(rec: Dict[str, Any], k: int) -> bool:
     return rank is not None and rank <= k
 
 
+def _query_of(rec: Dict[str, Any]) -> Any:
+    """取记录里的 query。检索版是 query；融合版是 query_a + query_b。"""
+    if rec.get("query") is not None:
+        return rec.get("query")
+    qa, qb = rec.get("query_a"), rec.get("query_b")
+    if qa is not None or qb is not None:
+        return {"query_a": qa, "query_b": qb}
+    return None
+
+
+def _top5_of(rec: Dict[str, Any]) -> Any:
+    """取记录里实际召回的 top5。检索版是 retrieved_top5；融合版是 fused_top5(+topA/topB)。"""
+    if "retrieved_top5" in rec:
+        return rec.get("retrieved_top5", [])
+    if "fused_top5" in rec or "topA" in rec:
+        return {"fused_top5": rec.get("fused_top5", []),
+                "topA": rec.get("topA", []), "topB": rec.get("topB", [])}
+    return []
+
+
 def build_item(
     sno: str,
     r1: Dict[str, Any],
@@ -117,10 +144,10 @@ def build_item(
         "case_text": case.get("case_text", ""),
         "dir1_rank": r1.get("hit_rank"),
         "dir2_rank": r2.get("hit_rank"),
-        "dir1_query": r1.get("query"),
-        "dir2_query": r2.get("query"),
-        "dir1_retrieved_top5": r1.get("retrieved_top5", []),
-        "dir2_retrieved_top5": r2.get("retrieved_top5", []),
+        "dir1_query": _query_of(r1),
+        "dir2_query": _query_of(r2),
+        "dir1_retrieved_top5": _top5_of(r1),
+        "dir2_retrieved_top5": _top5_of(r2),
     }
     if "visited" in r1:
         item["dir1_visited"] = r1.get("visited")
