@@ -189,11 +189,12 @@ def generate_query_messages(chat_content: str, backgrounds: List[Dict]) -> List[
     )
     user = (
         f"对话内容：\n{chat_content}\n\n"
-        f"背景知识（按导航经过的节点列出）：\n{bg}\n\n"
-        '对话内容反应了用户的某些问题和客服的交互历史，生成query时要先分析对话，结合背景知识理解用户现在的问题。'
+        f"背景知识：\n{bg}\n\n"
+        '对话内容反应了用户的某些问题和客服的交互历史，客服最终会构造一个query，用来检索能解决用户问题的案例。现在你需要模拟客服的思路，生成一个检索query。'
+        '生成query时要先分析对话，并结合背景知识推理客服在完成这样的对话后，将会构造出什么样的query。'
         '如果对话为英文，生成的query也应为英文。'
-        '作为检索的query中，关键词是很重要的，当用户提到某种陌生的企业内部用语，你不应该忽略'
-        '请判断哪些背景知识是和用户问题相关的，哪些不相关，你应该有分辨地利用背景知识。背景知识仅作为辅助，不需要严格遵守。'
+        '作为检索的query中，关键词是很重要的，你不应该忽略用户提到的软件名、行业术语等关键词。'
+        '请判断哪些背景知识是和用户问题相关的，哪些不相关，你应该有分辨地利用背景知识。加上不相关的背景知识会影响检索效果。'
         '输出结果前先一步步分析，将你的分析用```analysis```包裹，将你的结果用```json```代码块包裹：'
         '```analysis\n<分析过程>\n```\n```json\n{"query":"<检索query>"}\n```'
     )
@@ -322,9 +323,9 @@ def refine_trigger_messages(
     system = (
         "你是知识节点优化专家。下面这批对话本应被分类到指定节点，但当前没能正确进入。"
         "原因被归因为该节点的 dialog_trigger（触发条件）不当。\n"
-        "dialog_trigger 的作用是说明「什么样的对话应进入该类别」。"
+        "dialog_trigger 的作用是说明「对话中用户提到什么时，应进入该类别」。"
         "请根据这批对话的共性，改进该节点的 dialog_trigger，使这些对话能正确进入本节点，"
-        "同时避免写得过宽而把明显不相关的对话也吸进来。只改 dialog_trigger，不动 background。\n"
+        "同时避免写得过宽而把明显不相关的对话也吸进来。\n"
         "请先简要分析，最后用 ```json``` 代码块输出。"
     )
     sample_lines = []
@@ -351,19 +352,21 @@ def refine_background_messages(
 ) -> List[Dict[str, str]]:
     """修改某节点的 background：让据此生成的 query 能检索到目标案例。"""
     system = (
-        "你是知识节点优化专家。下面这批对话已正确导航到指定节点，"
-        "但结合该节点 background 生成的检索 query 没能检索到本应命中的目标案例（GT 案例）。"
-        "原因被归因为该节点的 background（背景知识）不足。\n"
-        "background 的作用是提供额外知识，指导生成更容易检索到目标案例的 query。"
+        "你是知识节点优化专家，你的任务是优化知识节点的background。 \n"
+        "在智能客服场景中，模型需要依据对话数据和节点的 background 生成检索query，以检索到目标案例（GT案例）"
+        "以下对话结合该节点 background 生成的检索 query 没能检索到 GT 案例，说明该节点的 background 不足。\n"
+        "一般来说，query检索不到GT案例的原因是缺少了某些关键词，背景知识就是用来补充这些关键词，说明在对话中出现什么情况时，该考虑添加什么关键词。"
+        "有时是query中多了某些关键词，导致检索不到GT案例。关键词一般是软件名、行业术语、公司内用语等。\n"
         "请对照「生成的 query」与「目标案例标题/内容」，补充/调整该节点的 background，"
-        "使其贴近目标案例的用语与要点。只改 background，不动 dialog_trigger。\n"
-        "请先简要分析，最后用 ```json``` 代码块输出。"
+        "请按照：“关键词：xx关键词指的是什么，当对话中出现xx情况，建议添加该关键词”的格式补充/调整 background，"
+        "不要出现GT案例这样的表述，生成query时不知道GT案例是什么；不要出现强行要求生成某种query的表述。\n"
+        "反馈中说明了上一次进行的修改和效果，可以帮助你分析问题。"
+        "请先分析检索不到的原因，得出修改方案，最后用 ```json``` 代码块输出。"
     )
     sample_lines = []
     for i, s in enumerate(samples, 1):
         sample_lines.append(
             f"样本{i}：\n"
-            f"  归因原因：{s.get('reason', '')}\n"
             f"  对话内容：{s.get('chat_content', '')}\n"
             f"  生成的检索 query（未能检索到目标案例）：{s.get('query', '')}\n"
             f"  目标案例标题（GT）：{s.get('gt_case_name', '')}\n"
@@ -371,10 +374,10 @@ def refine_background_messages(
         )
     fb = f"\n\n{feedback}" if feedback else ""
     user = (
-        f"待优化节点：\nname：{node.name}\n"
-        f"当前 background：{node.background}\n\n"
-        f"导航已到位、但 query 检索失败的对话：\n"
-        + "\n\n".join(sample_lines) + fb + "\n\n"
+        f"待优化节点名称：\nname：{node.name}\n"
+        f"当前节点 background：{node.background}\n\n"
+        f"生成 query 检索失败的对话：\n"
+        + "\n\n".join(sample_lines) + "\n反馈：\n" + fb + "\n\n"
         "请先给出分析，最后用 ```json``` 代码块输出："
         '{"background":"<改进后的背景知识>","reason":"说明为何这样改"}'
     )
