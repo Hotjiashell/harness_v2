@@ -7,13 +7,14 @@ async def retrieve(query: str, caseID: str, top_k: int = 20)-> bool:
     results = retrieve_case(query, top_k=top_k)
     return any(item.get("caseID") == caseID for item in results)
 
-def retrieve_case(query: str, top_k: int = 20, strategy: str = "lexical&semantic")-> List[Dict[str, Any]]:
+def retrieve_case(query: str, top_k: int = 20, strategy: str = "lexical&semantic", index: str = "document_12")-> List[Dict[str, Any]]:
     """
     根据query进行查询，返回一个包含top_k个最相关case的列表。
 
     @param query: 用户输入的查询字符串
     @param top_k: 返回的最相关case的top-k数量
     @param strategy: 检索策略，默认为"lexical&semantic"，后续可调整，便于调试
+    @param index: 检索的索引名称，默认为"document_12"，后续可调整，便于调试
 
     @return: 包含最相关case的列表，每个case是一个字典，详细结构如下:
         
