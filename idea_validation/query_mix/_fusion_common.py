@@ -51,9 +51,29 @@ def load_query_map(path: Path) -> Dict[str, Dict[str, Any]]:
     return {str(r.get("call_sno")): r for r in records}
 
 
+def load_dialog_chat(path: Path) -> Dict[str, str]:
+    """读取原始对话文件，返回 {call_sno: chat_content}，用于 query 文件缺 chat_content 时兜底。"""
+    if not path or not Path(path).exists():
+        if path:
+            log(f"提示：找不到对话文件 {path}，无法为缺失 chat_content 的记录兜底")
+        return {}
+    raw = read_json(Path(path))
+    if not isinstance(raw, list):
+        log(f"提示：对话文件格式不是列表：{path}")
+        return {}
+    out: Dict[str, str] = {}
+    for item in raw:
+        if isinstance(item, dict):
+            sno = str(item.get("call_sno", "")).strip()
+            if sno:
+                out[sno] = str(item.get("chat_content", ""))
+    return out
+
+
 async def retrieve_two(
     retrieve_case, query_a: str, query_b: str, max_k: int, strategy: str,
-    sem: asyncio.Semaphore,
+    sem: asyncio.Semaphore, index: str = "document_12",
+    use_similar_question: bool = False, use_chat: bool = False, chat_content: str = "",
 ) -> tuple:
     """用两个 query 各检索 top-max_k，返回 (items_a, items_b)。"""
     is_async = inspect.iscoroutinefunction(retrieve_case)
@@ -61,11 +81,15 @@ async def retrieve_two(
     async def _run(q: str) -> List[Dict[str, Any]]:
         if not q:
             return []
+        kwargs = dict(top_k=max_k, strategy=strategy, index=index,
+                      use_similar_question=use_similar_question,
+                      use_chat=use_chat,
+                      chat_content=chat_content if use_chat else "")
         async with sem:
             if is_async:
-                res = await retrieve_case(q, top_k=max_k, strategy=strategy)
+                res = await retrieve_case(q, **kwargs)
             else:
-                res = await asyncio.to_thread(retrieve_case, q, top_k=max_k, strategy=strategy)
+                res = await asyncio.to_thread(retrieve_case, q, **kwargs)
         return res or []
 
     a, b = await asyncio.gather(_run(query_a), _run(query_b))
@@ -92,6 +116,8 @@ async def run_fusion_eval(
     log(f"融合方法：{method_name}")
     log(f"query A：{qa_path}（{len(qa)} 条）")
     log(f"query B：{qb_path}（{len(qb)} 条）")
+    log(f"检索策略：{args.strategy}；index：{args.index}"
+        f"；use_similar_question={args.use_similar_question}；use_chat={args.use_chat}")
 
     common = sorted(set(qa) & set(qb))
     only_a, only_b = set(qa) - set(qb), set(qb) - set(qa)
@@ -103,18 +129,27 @@ async def run_fusion_eval(
     max_k = max(TOP_KS)
     sem = asyncio.Semaphore(max(1, args.concurrency))
 
+    # use_chat 时，query 文件缺 chat_content 就用对话文件按 call_sno 兜底
+    dialog_chat = load_dialog_chat(Path(args.dialog)) if args.use_chat else {}
+
     async def _one(sno: str) -> Dict[str, Any]:
         ra, rb = qa[sno], qb[sno]
         case_id = str(ra.get("case_id") or rb.get("case_id") or "")
         query_a = ra.get("query", "")
         query_b = rb.get("query", "")
+        # use_chat 时把该对话内容传给检索（A/B 同一 call_sno，chat_content 一致）；
+        # query 文件里没有就用对话文件按 call_sno 兜底
+        chat_content = str(ra.get("chat_content") or rb.get("chat_content")
+                           or dialog_chat.get(sno, ""))
         rec: Dict[str, Any] = {
             "call_sno": sno, "case_id": case_id,
             "query_a": query_a, "query_b": query_b,
         }
         try:
             items_a, items_b = await retrieve_two(
-                retrieve_case, query_a, query_b, max_k, args.strategy, sem
+                retrieve_case, query_a, query_b, max_k, args.strategy, sem,
+                index=args.index, use_similar_question=args.use_similar_question,
+                use_chat=args.use_chat, chat_content=chat_content,
             )
             fused_ids = fuse_fn(items_a, items_b, max_k)
             hit_rank = hit_rank_in(fused_ids, case_id)
@@ -141,7 +176,9 @@ async def run_fusion_eval(
         "config": {
             "method": method_name,
             "query_a": str(qa_path), "query_b": str(qb_path),
-            "strategy": args.strategy, "compared": len(common),
+            "strategy": args.strategy, "index": args.index,
+            "use_similar_question": args.use_similar_question, "use_chat": args.use_chat,
+            "compared": len(common),
         },
         "summary": summary,
     })
@@ -161,4 +198,11 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out-dir", default=str(EVAL_QM_DIR / "output"), help="输出目录")
     p.add_argument("--result-file", default=None, help="召回率结果文件路径")
     p.add_argument("--strategy", default="lexical&semantic", help="传给 retrieve_case 的检索策略")
+    p.add_argument("--index", default="document_12", help="传给 retrieve_case 的检索索引名称")
+    p.add_argument("--use-similar-question", action="store_true",
+                   help="检索时启用相似问题（retrieve_case 的 use_similar_question）")
+    p.add_argument("--use-chat", action="store_true",
+                   help="检索时启用对话内容（retrieve_case 的 use_chat，会把每条 query 对应的 chat_content 一并传入）")
+    p.add_argument("--dialog", default=str(ROOT_DIR / "data" / "dialog" / "dialog.json"),
+                   help="原始对话文件，query 文件缺 chat_content 时按 call_sno 兜底（use_chat 时用）")
     p.add_argument("--concurrency", type=int, default=8)

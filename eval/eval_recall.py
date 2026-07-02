@@ -186,6 +186,7 @@ def summarize_top_cases(results: List[Dict[str, Any]], top_k: int = 5) -> List[D
 async def run_retrieval(
     retrieve_case, records: List[Dict[str, Any]], concurrency: int,
     strategy: str = "lexical&semantic", index: str = "document_12",
+    use_similar_question: bool = False, use_chat: bool = False,
 ) -> List[Dict[str, Any]]:
     """对每条记录的 query 调 retrieve_case 取 top-max(TOP_KS)，记录命中目标案例的最小排名。"""
     max_k = max(TOP_KS)
@@ -195,17 +196,20 @@ async def run_retrieval(
     async def _one(rec: Dict[str, Any]) -> Dict[str, Any]:
         query = rec.get("query", "")
         case_id = rec.get("case_id", "")
+        # use_chat 时把该 query 对应的对话内容一并传给检索
+        chat_content = rec.get("chat_content", "") if use_chat else ""
         hit_rank = None
         retrieved_top5: List[Dict[str, Any]] = []
         try:
             async with sem:
+                kwargs = dict(top_k=max_k, strategy=strategy, index=index,
+                              use_similar_question=use_similar_question,
+                              use_chat=use_chat, chat_content=chat_content)
                 if is_async:
-                    res = await retrieve_case(query, top_k=max_k, strategy=strategy, index=index)
+                    res = await retrieve_case(query, **kwargs)
                 else:
                     # 同步函数：丢线程池执行，避免阻塞事件循环、实现真并行
-                    res = await asyncio.to_thread(
-                        retrieve_case, query, top_k=max_k, strategy=strategy, index=index
-                    )
+                    res = await asyncio.to_thread(retrieve_case, query, **kwargs)
             res = res or []
             retrieved_top5 = summarize_top_cases(res, 5)
             for idx, item in enumerate(res):
@@ -262,7 +266,8 @@ async def main_async(args: argparse.Namespace) -> int:
         # 导航中间文件（经过的节点 + query）
         write_json(nav_file, records)
         write_json(query_file,
-                   [{"call_sno": r["call_sno"], "case_id": r["case_id"], "query": r["query"]}
+                   [{"call_sno": r["call_sno"], "case_id": r["case_id"],
+                     "query": r["query"], "chat_content": r["chat_content"]}
                     for r in records])
         if args.stage == "query":
             log("阶段 query：已生成 query，结束（未检索）。")
@@ -273,12 +278,24 @@ async def main_async(args: argparse.Namespace) -> int:
             return 2
         records = read_json(query_file)
         log(f"从 query 文件读取 {len(records)} 条：{query_file}")
+        # use_chat 且 query 文件缺 chat_content 时，用对话文件按 call_sno 兜底
+        if args.use_chat and any(not r.get("chat_content") for r in records):
+            chat_map = {str(d.call_sno): d.chat_content
+                        for d in Dialog.load_all(read_json(Path(args.dialog)))}
+            n = 0
+            for r in records:
+                if not r.get("chat_content"):
+                    r["chat_content"] = chat_map.get(str(r.get("call_sno")), "")
+                    n += 1
+            log(f"从对话文件兜底填充 chat_content：{n} 条（{args.dialog}）")
 
     # 检索 + 召回率
     retrieve_case = load_retrieve_case()
-    log(f"检索策略：{args.strategy}；index：{args.index}")
+    log(f"检索策略：{args.strategy}；index：{args.index}"
+        f"；use_similar_question={args.use_similar_question}；use_chat={args.use_chat}")
     retrieved = await run_retrieval(
-        retrieve_case, records, args.concurrency, strategy=args.strategy, index=args.index
+        retrieve_case, records, args.concurrency, strategy=args.strategy, index=args.index,
+        use_similar_question=args.use_similar_question, use_chat=args.use_chat,
     )
     summary = summarize_recall(retrieved)
 
@@ -289,6 +306,7 @@ async def main_async(args: argparse.Namespace) -> int:
             "enable_thinking": enable_thinking,
             "dialog": args.dialog, "tree": args.tree,
             "strategy": args.strategy, "index": args.index,
+            "use_similar_question": args.use_similar_question, "use_chat": args.use_chat,
         },
         "summary": summary,
     })
@@ -318,6 +336,10 @@ def parse_args() -> argparse.Namespace:
                    help="传给 retrieve.py::retrieve_case 的检索策略")
     p.add_argument("--index", default="document_12",
                    help="传给 retrieve.py::retrieve_case 的检索索引名称")
+    p.add_argument("--use-similar-question", action="store_true",
+                   help="检索时启用相似问题（retrieve_case 的 use_similar_question）")
+    p.add_argument("--use-chat", action="store_true",
+                   help="检索时启用对话内容（retrieve_case 的 use_chat，会把每条 query 对应的 chat_content 一并传入）")
     # 输出
     p.add_argument("--out-dir", default=str(EVAL_DIR / "output"), help="输出目录")
     p.add_argument("--result-file", default=None, help="召回率结果文件路径")

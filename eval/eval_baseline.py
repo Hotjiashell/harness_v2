@@ -90,7 +90,8 @@ async def main_async(args: argparse.Namespace) -> int:
         log(f"provider={args.provider} 思考模式={'开' if enable_thinking else '关'}")
         records = await run_baseline_query(llm, dialogs, args.concurrency)
         write_json(query_file,
-                   [{"call_sno": r["call_sno"], "case_id": r["case_id"], "query": r["query"]}
+                   [{"call_sno": r["call_sno"], "case_id": r["case_id"],
+                     "query": r["query"], "chat_content": r["chat_content"]}
                     for r in records])
         if args.stage == "query":
             log("阶段 query：已生成 baseline query，结束（未检索）。")
@@ -101,11 +102,23 @@ async def main_async(args: argparse.Namespace) -> int:
             return 2
         records = read_json(query_file)
         log(f"从 query 文件读取 {len(records)} 条：{query_file}")
+        # use_chat 且 query 文件缺 chat_content 时，用对话文件按 call_sno 兜底
+        if args.use_chat and any(not r.get("chat_content") for r in records):
+            chat_map = {str(d.call_sno): d.chat_content
+                        for d in Dialog.load_all(read_json(Path(args.dialog)))}
+            n = 0
+            for r in records:
+                if not r.get("chat_content"):
+                    r["chat_content"] = chat_map.get(str(r.get("call_sno")), "")
+                    n += 1
+            log(f"从对话文件兜底填充 chat_content：{n} 条（{args.dialog}）")
 
     retrieve_case = load_retrieve_case()
-    log(f"检索策略：{args.strategy}；index：{args.index}")
+    log(f"检索策略：{args.strategy}；index：{args.index}"
+        f"；use_similar_question={args.use_similar_question}；use_chat={args.use_chat}")
     retrieved = await run_retrieval(
-        retrieve_case, records, args.concurrency, strategy=args.strategy, index=args.index
+        retrieve_case, records, args.concurrency, strategy=args.strategy, index=args.index,
+        use_similar_question=args.use_similar_question, use_chat=args.use_chat,
     )
     summary = summarize_recall(retrieved)
 
@@ -116,6 +129,7 @@ async def main_async(args: argparse.Namespace) -> int:
             "stage": args.stage, "provider": args.provider, "model": args.model,
             "enable_thinking": enable_thinking, "dialog": args.dialog,
             "strategy": args.strategy, "index": args.index,
+            "use_similar_question": args.use_similar_question, "use_chat": args.use_chat,
         },
         "summary": summary,
     })
@@ -141,6 +155,10 @@ def parse_args() -> argparse.Namespace:
                    help="传给 retrieve.py::retrieve_case 的检索策略")
     p.add_argument("--index", default="document_12",
                    help="传给 retrieve.py::retrieve_case 的检索索引名称")
+    p.add_argument("--use-similar-question", action="store_true",
+                   help="检索时启用相似问题（retrieve_case 的 use_similar_question）")
+    p.add_argument("--use-chat", action="store_true",
+                   help="检索时启用对话内容（retrieve_case 的 use_chat，会把每条 query 对应的 chat_content 一并传入）")
     p.add_argument("--out-dir", default=str(EVAL_DIR / "baseline_output"), help="输出目录")
     p.add_argument("--result-file", default=None, help="召回率结果文件路径")
     p.add_argument("--provider", default="openai", help="LLM provider：openai 或 mock")
