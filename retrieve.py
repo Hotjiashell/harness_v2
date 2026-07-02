@@ -7,7 +7,8 @@ async def retrieve(query: str, caseID: str, top_k: int = 20)-> bool:
     results = retrieve_case(query, top_k=top_k)
     return any(item.get("caseID") == caseID for item in results)
 
-def retrieve_case(query: str, top_k: int = 20, strategy: str = "lexical&semantic", index: str = "document_12")-> List[Dict[str, Any]]:
+def retrieve_case(query: str, top_k: int = 20, strategy: str = "lexical&semantic", index: str = "document_12", 
+                  use_similar_question: bool = False, use_chat: bool = False, chat_content: str = "")-> List[Dict[str, Any]]:
     """
     根据query进行查询，返回一个包含top_k个最相关case的列表。
 
