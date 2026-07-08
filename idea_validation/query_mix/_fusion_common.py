@@ -51,22 +51,64 @@ def load_query_map(path: Path) -> Dict[str, Dict[str, Any]]:
     return {str(r.get("call_sno")): r for r in records}
 
 
-def load_dialog_chat(path: Path) -> Dict[str, str]:
-    """读取原始对话文件，返回 {call_sno: chat_content}，用于 query 文件缺 chat_content 时兜底。"""
+def load_dialog_map(path: Path) -> Dict[str, Dict[str, Any]]:
+    """读取原始对话文件，返回 {call_sno: 完整对话记录}。"""
     if not path or not Path(path).exists():
         if path:
-            log(f"提示：找不到对话文件 {path}，无法为缺失 chat_content 的记录兜底")
+            log(f"提示：找不到对话文件 {path}，无法补充完整对话调试信息")
         return {}
     raw = read_json(Path(path))
-    if not isinstance(raw, list):
-        log(f"提示：对话文件格式不是列表：{path}")
-        return {}
-    out: Dict[str, str] = {}
-    for item in raw:
-        if isinstance(item, dict):
+    out: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
             sno = str(item.get("call_sno", "")).strip()
             if sno:
-                out[sno] = str(item.get("chat_content", ""))
+                out[sno] = item
+        return out
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if not isinstance(value, dict):
+                continue
+            sno = str(value.get("call_sno") or key).strip()
+            if sno:
+                out[sno] = value
+        return out
+    log(f"提示：对话文件格式不支持：{path}")
+    return out
+
+
+def load_case_text_map(path: Path) -> Dict[str, Dict[str, Any]]:
+    """读取案例标题/内容文件，返回 {case_id: 案例记录}。"""
+    if not path or not Path(path).exists():
+        if path:
+            log(f"提示：找不到案例文件 {path}，无法补充 GT 案例调试信息")
+        return {}
+    raw = read_json(Path(path))
+    out: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            cid = str(key).strip()
+            if not cid:
+                continue
+            if isinstance(value, dict):
+                item = dict(value)
+                item.setdefault("case_id", cid)
+                item.setdefault("caseID", cid)
+                out[cid] = item
+            else:
+                out[cid] = {"case_id": cid, "caseID": cid, "text": str(value)}
+        return out
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            cid = case_id_of(item)
+            if cid:
+                out[cid] = item
+        return out
+    log(f"提示：案例文件格式不支持：{path}")
     return out
 
 
@@ -129,12 +171,21 @@ async def run_fusion_eval(
     max_k = max(TOP_KS)
     sem = asyncio.Semaphore(max(1, args.concurrency))
 
+    dialog_map = load_dialog_map(Path(args.dialog))
+    case_text_map = load_case_text_map(Path(args.case_text))
+    if dialog_map:
+        log(f"已加载对话调试数据：{len(dialog_map)} 条")
+    if case_text_map:
+        log(f"已加载 GT 案例调试数据：{len(case_text_map)} 条")
+
     # use_chat 时，query 文件缺 chat_content 就用对话文件按 call_sno 兜底
-    dialog_chat = load_dialog_chat(Path(args.dialog)) if args.use_chat else {}
+    dialog_chat = {sno: str(item.get("chat_content", "")) for sno, item in dialog_map.items()}
 
     async def _one(sno: str) -> Dict[str, Any]:
         ra, rb = qa[sno], qb[sno]
-        case_id = str(ra.get("case_id") or rb.get("case_id") or "")
+        dialog_item = dialog_map.get(sno, {})
+        case_id = str(ra.get("case_id") or rb.get("case_id") or dialog_item.get("caseID") or "")
+        gt_case_item = case_text_map.get(case_id, {})
         query_a = ra.get("query", "")
         query_b = rb.get("query", "")
         # use_chat 时把该对话内容传给检索（A/B 同一 call_sno，chat_content 一致）；
@@ -144,6 +195,12 @@ async def run_fusion_eval(
         rec: Dict[str, Any] = {
             "call_sno": sno, "case_id": case_id,
             "query_a": query_a, "query_b": query_b,
+            "dialog": dialog_item,
+            "gt_case": {
+                "case_id": case_id,
+                "case_name": str(gt_case_item.get("case_name", "")),
+                "text": str(gt_case_item.get("text", "")),
+            },
         }
         try:
             items_a, items_b = await retrieve_two(
@@ -204,5 +261,7 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--use-chat", action="store_true",
                    help="检索时启用对话内容（retrieve_case 的 use_chat，会把每条 query 对应的 chat_content 一并传入）")
     p.add_argument("--dialog", default=str(ROOT_DIR / "data" / "dialog" / "dialog.json"),
-                   help="原始对话文件，query 文件缺 chat_content 时按 call_sno 兜底（use_chat 时用）")
+                   help="原始对话文件：用于 fusion_detail.json 补充完整对话；use_chat 时也用于 chat_content 兜底")
+    p.add_argument("--case-text", default=str(ROOT_DIR / "data" / "case" / "text.json"),
+                   help="案例标题/内容文件：用于 fusion_detail.json 补充 GT case_name 和 text")
     p.add_argument("--concurrency", type=int, default=8)
