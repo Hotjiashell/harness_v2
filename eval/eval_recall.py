@@ -31,7 +31,7 @@ import inspect
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # 路径与依赖：复用 build/khtree 的 LLM 客户端与数据模型
@@ -89,6 +89,12 @@ def write_json(path: Path, data: Any) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"已写出：{p}")
+
+
+def load_dialog_chat_map(path: Path) -> Dict[str, str]:
+    """只从指定的对话文件读取检索用 chat_content，并按 call_sno 建立映射。"""
+    dialogs = Dialog.load_all(read_json(Path(path)))
+    return {str(d.call_sno): str(d.chat_content or "") for d in dialogs}
 
 
 def init_dialog_trigger(node: Node) -> int:
@@ -187,8 +193,21 @@ async def run_retrieval(
     retrieve_case, records: List[Dict[str, Any]], concurrency: int,
     strategy: str = "lexical&semantic", index: str = "document_12",
     use_similar_question: bool = False, use_chat: bool = False,
+    dialog_chat_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
-    """对每条记录的 query 调 retrieve_case 取 top-max(TOP_KS)，记录命中目标案例的最小排名。"""
+    """执行检索；启用 use_chat 时，对话只能来自调用方从 --dialog 加载的映射。"""
+    if use_chat and dialog_chat_map is None:
+        raise ValueError("use_chat=True 时必须提供由 --dialog 加载的 dialog_chat_map")
+    if use_chat:
+        missing = sorted({str(r.get("call_sno", "")) for r in records
+                          if not (dialog_chat_map or {}).get(str(r.get("call_sno", "")), "")})
+        if missing:
+            preview = ", ".join(missing[:5])
+            suffix = "..." if len(missing) > 5 else ""
+            raise ValueError(
+                f"--dialog 中缺少 {len(missing)} 条 query 的非空 chat_content：{preview}{suffix}"
+            )
+
     max_k = max(TOP_KS)
     sem = asyncio.Semaphore(max(1, concurrency))
     is_async = inspect.iscoroutinefunction(retrieve_case)
@@ -196,8 +215,9 @@ async def run_retrieval(
     async def _one(rec: Dict[str, Any]) -> Dict[str, Any]:
         query = rec.get("query", "")
         case_id = rec.get("case_id", "")
-        # use_chat 时把该 query 对应的对话内容一并传给检索
-        chat_content = rec.get("chat_content", "") if use_chat else ""
+        # 绝不读取 query 文件中的 chat_content；只按 call_sno 使用 --dialog 的内容。
+        chat_content = ((dialog_chat_map or {}).get(str(rec.get("call_sno")), "")
+                        if use_chat else "")
         hit_rank = None
         retrieved_top5: List[Dict[str, Any]] = []
         try:
@@ -267,7 +287,7 @@ async def main_async(args: argparse.Namespace) -> int:
         write_json(nav_file, records)
         write_json(query_file,
                    [{"call_sno": r["call_sno"], "case_id": r["case_id"],
-                     "query": r["query"], "chat_content": r["chat_content"]}
+                     "query": r["query"]}
                     for r in records])
         if args.stage == "query":
             log("阶段 query：已生成 query，结束（未检索）。")
@@ -278,24 +298,27 @@ async def main_async(args: argparse.Namespace) -> int:
             return 2
         records = read_json(query_file)
         log(f"从 query 文件读取 {len(records)} 条：{query_file}")
-        # use_chat 且 query 文件缺 chat_content 时，用对话文件按 call_sno 兜底
-        if args.use_chat and any(not r.get("chat_content") for r in records):
-            chat_map = {str(d.call_sno): d.chat_content
-                        for d in Dialog.load_all(read_json(Path(args.dialog)))}
-            n = 0
-            for r in records:
-                if not r.get("chat_content"):
-                    r["chat_content"] = chat_map.get(str(r.get("call_sno")), "")
-                    n += 1
-            log(f"从对话文件兜底填充 chat_content：{n} 条（{args.dialog}）")
 
     # 检索 + 召回率
+    dialog_chat_map: Optional[Dict[str, str]] = None
+    if args.use_chat:
+        dialog_chat_map = load_dialog_chat_map(Path(args.dialog))
+        missing = sorted({str(r.get("call_sno", "")) for r in records
+                          if not dialog_chat_map.get(str(r.get("call_sno", "")), "")})
+        log(f"检索对话仅从 --dialog 加载：{args.dialog}（{len(dialog_chat_map)} 条）")
+        if missing:
+            preview = ", ".join(missing[:5])
+            suffix = "..." if len(missing) > 5 else ""
+            log(f"错误：--dialog 中缺少 {len(missing)} 条 query 的非空 chat_content：{preview}{suffix}")
+            return 2
+
     retrieve_case = load_retrieve_case()
     log(f"检索策略：{args.strategy}；index：{args.index}"
         f"；use_similar_question={args.use_similar_question}；use_chat={args.use_chat}")
     retrieved = await run_retrieval(
         retrieve_case, records, args.concurrency, strategy=args.strategy, index=args.index,
         use_similar_question=args.use_similar_question, use_chat=args.use_chat,
+        dialog_chat_map=dialog_chat_map,
     )
     summary = summarize_recall(retrieved)
 
@@ -339,7 +362,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use-similar-question", action="store_true",
                    help="检索时启用相似问题（retrieve_case 的 use_similar_question）")
     p.add_argument("--use-chat", action="store_true",
-                   help="检索时启用对话内容（retrieve_case 的 use_chat，会把每条 query 对应的 chat_content 一并传入）")
+                   help="检索时启用对话内容；chat_content 只从 --dialog 按 call_sno 读取")
     # 输出
     p.add_argument("--out-dir", default=str(EVAL_DIR / "output"), help="输出目录")
     p.add_argument("--result-file", default=None, help="召回率结果文件路径")

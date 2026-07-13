@@ -20,6 +20,12 @@ python eval/eval_recall.py --stage query
 # 从已有 query 文件只跑检索 + 召回率
 python eval/eval_recall.py --stage retrieve --query-file eval/output/queries.json
 
+# 检索时附带对话；对话只从 --dialog 按 call_sno 读取
+python eval/eval_recall.py --stage retrieve \
+    --query-file eval/output/queries.json \
+    --dialog data/dialog/dialog.json \
+    --use-chat
+
 # 关闭思考模式（默认开启）
 python eval/eval_recall.py --no-thinking
 
@@ -42,6 +48,7 @@ python eval/eval_recall.py --provider mock
 | `--dialog` | 对话数据文件 | `data/dialog/dialog.json` |
 | `--tree` | 知识树文件 | `build/output/knowledge_tree.json` |
 | `--query-file` | query 中间文件（retrieve 阶段读取，其他阶段写入） | `<out-dir>/queries.json` |
+| `--use-chat` | 检索时附带对话；只读取 `--dialog`，忽略 query 文件内的任何对话字段 | 关闭 |
 | `--out-dir` | 输出目录 | `eval/output` |
 | `--result-file` | 召回率结果文件 | `<out-dir>/recall_result.json` |
 | `--stage` | 运行阶段 | `full` |
@@ -61,6 +68,12 @@ python eval/eval_recall.py --provider mock
 
 召回率同时打印到终端。命中排名 `hit_rank` 为目标案例在检索结果中的 1-based 名次，
 `null` 表示 top-50 内未命中。
+
+无论是 `full` 还是 `retrieve` 阶段，启用 `--use-chat` 后，检索用的 `chat_content`
+都只会从 `--dialog` 指定文件按 `call_sno` 加载；即使旧版 `queries.json` 中带有
+`chat_content` 或 `dialog` 字段，也不会用于检索。若某个 `call_sno` 在 `--dialog` 中没有
+非空 `chat_content`，程序会报错停止，而不会改用 query 文件或空对话。新生成的
+`queries.json` 不再写入对话内容。
 
 ---
 

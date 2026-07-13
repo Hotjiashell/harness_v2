@@ -55,7 +55,7 @@ def load_dialog_map(path: Path) -> Dict[str, Dict[str, Any]]:
     """读取原始对话文件，返回 {call_sno: 完整对话记录}。"""
     if not path or not Path(path).exists():
         if path:
-            log(f"提示：找不到对话文件 {path}，无法补充完整对话调试信息")
+            log(f"提示：找不到对话文件 {path}，无法提供调试信息或 use_chat 检索内容")
         return {}
     raw = read_json(Path(path))
     out: Dict[str, Dict[str, Any]] = {}
@@ -178,8 +178,16 @@ async def run_fusion_eval(
     if case_text_map:
         log(f"已加载 GT 案例调试数据：{len(case_text_map)} 条")
 
-    # use_chat 时，query 文件缺 chat_content 就用对话文件按 call_sno 兜底
+    # 检索用对话只允许来自 --dialog；query A/B 中即使带 chat_content 也一律忽略。
     dialog_chat = {sno: str(item.get("chat_content", "")) for sno, item in dialog_map.items()}
+    if args.use_chat:
+        missing = [sno for sno in common if not dialog_chat.get(sno, "")]
+        log(f"检索对话仅从 --dialog 加载：{args.dialog}（{len(dialog_chat)} 条）")
+        if missing:
+            preview = ", ".join(missing[:5])
+            suffix = "..." if len(missing) > 5 else ""
+            log(f"错误：--dialog 中缺少 {len(missing)} 条共同 query 的非空 chat_content：{preview}{suffix}")
+            return 2
 
     async def _one(sno: str) -> Dict[str, Any]:
         ra, rb = qa[sno], qb[sno]
@@ -188,10 +196,8 @@ async def run_fusion_eval(
         gt_case_item = case_text_map.get(case_id, {})
         query_a = ra.get("query", "")
         query_b = rb.get("query", "")
-        # use_chat 时把该对话内容传给检索（A/B 同一 call_sno，chat_content 一致）；
-        # query 文件里没有就用对话文件按 call_sno 兜底
-        chat_content = str(ra.get("chat_content") or rb.get("chat_content")
-                           or dialog_chat.get(sno, ""))
+        # A/B 共用 --dialog 中同一 call_sno 的对话，绝不读取 query 文件内的对话字段。
+        chat_content = dialog_chat.get(sno, "")
         rec: Dict[str, Any] = {
             "call_sno": sno, "case_id": case_id,
             "query_a": query_a, "query_b": query_b,
@@ -233,6 +239,7 @@ async def run_fusion_eval(
         "config": {
             "method": method_name,
             "query_a": str(qa_path), "query_b": str(qb_path),
+            "dialog": str(Path(args.dialog)),
             "strategy": args.strategy, "index": args.index,
             "use_similar_question": args.use_similar_question, "use_chat": args.use_chat,
             "compared": len(common),
@@ -259,9 +266,9 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--use-similar-question", action="store_true",
                    help="检索时启用相似问题（retrieve_case 的 use_similar_question）")
     p.add_argument("--use-chat", action="store_true",
-                   help="检索时启用对话内容（retrieve_case 的 use_chat，会把每条 query 对应的 chat_content 一并传入）")
+                   help="检索时启用对话内容；chat_content 只从 --dialog 按 call_sno 读取")
     p.add_argument("--dialog", default=str(ROOT_DIR / "data" / "dialog" / "dialog.json"),
-                   help="原始对话文件：用于 fusion_detail.json 补充完整对话；use_chat 时也用于 chat_content 兜底")
+                   help="原始对话文件：用于调试信息，也是 use_chat 时检索对话的唯一来源")
     p.add_argument("--case-text", default=str(ROOT_DIR / "data" / "case" / "text.json"),
                    help="案例标题/内容文件：用于 fusion_detail.json 补充 GT case_name 和 text")
     p.add_argument("--concurrency", type=int, default=8)

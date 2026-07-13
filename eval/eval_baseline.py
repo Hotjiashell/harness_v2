@@ -40,7 +40,7 @@ from khtree.models import Dialog  # noqa: E402
 import eval_recall as ER  # noqa: E402
 from eval_recall import (  # noqa: E402
     TOP_KS, log, read_json, write_json, load_retrieve_case,
-    run_retrieval, summarize_recall, _gather_with_progress,
+    load_dialog_chat_map, run_retrieval, summarize_recall, _gather_with_progress,
 )
 
 
@@ -91,7 +91,7 @@ async def main_async(args: argparse.Namespace) -> int:
         records = await run_baseline_query(llm, dialogs, args.concurrency)
         write_json(query_file,
                    [{"call_sno": r["call_sno"], "case_id": r["case_id"],
-                     "query": r["query"], "chat_content": r["chat_content"]}
+                     "query": r["query"]}
                     for r in records])
         if args.stage == "query":
             log("阶段 query：已生成 baseline query，结束（未检索）。")
@@ -102,16 +102,18 @@ async def main_async(args: argparse.Namespace) -> int:
             return 2
         records = read_json(query_file)
         log(f"从 query 文件读取 {len(records)} 条：{query_file}")
-        # use_chat 且 query 文件缺 chat_content 时，用对话文件按 call_sno 兜底
-        if args.use_chat and any(not r.get("chat_content") for r in records):
-            chat_map = {str(d.call_sno): d.chat_content
-                        for d in Dialog.load_all(read_json(Path(args.dialog)))}
-            n = 0
-            for r in records:
-                if not r.get("chat_content"):
-                    r["chat_content"] = chat_map.get(str(r.get("call_sno")), "")
-                    n += 1
-            log(f"从对话文件兜底填充 chat_content：{n} 条（{args.dialog}）")
+
+    dialog_chat_map = None
+    if args.use_chat:
+        dialog_chat_map = load_dialog_chat_map(Path(args.dialog))
+        missing = sorted({str(r.get("call_sno", "")) for r in records
+                          if not dialog_chat_map.get(str(r.get("call_sno", "")), "")})
+        log(f"检索对话仅从 --dialog 加载：{args.dialog}（{len(dialog_chat_map)} 条）")
+        if missing:
+            preview = ", ".join(missing[:5])
+            suffix = "..." if len(missing) > 5 else ""
+            log(f"错误：--dialog 中缺少 {len(missing)} 条 query 的非空 chat_content：{preview}{suffix}")
+            return 2
 
     retrieve_case = load_retrieve_case()
     log(f"检索策略：{args.strategy}；index：{args.index}"
@@ -119,6 +121,7 @@ async def main_async(args: argparse.Namespace) -> int:
     retrieved = await run_retrieval(
         retrieve_case, records, args.concurrency, strategy=args.strategy, index=args.index,
         use_similar_question=args.use_similar_question, use_chat=args.use_chat,
+        dialog_chat_map=dialog_chat_map,
     )
     summary = summarize_recall(retrieved)
 
@@ -158,7 +161,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use-similar-question", action="store_true",
                    help="检索时启用相似问题（retrieve_case 的 use_similar_question）")
     p.add_argument("--use-chat", action="store_true",
-                   help="检索时启用对话内容（retrieve_case 的 use_chat，会把每条 query 对应的 chat_content 一并传入）")
+                   help="检索时启用对话内容；chat_content 只从 --dialog 按 call_sno 读取")
     p.add_argument("--out-dir", default=str(EVAL_DIR / "baseline_output"), help="输出目录")
     p.add_argument("--result-file", default=None, help="召回率结果文件路径")
     p.add_argument("--provider", default="openai", help="LLM provider：openai 或 mock")
